@@ -5,7 +5,7 @@
 # <img src="assets/logo.png" width="40" style="vertical-align: -25%; margin-right: -5px;"> GEMS: Agent-Native Multimodal Generation with Memory and Skills
 
 <a href="https://arxiv.org/abs/2603.28088"><img src="https://img.shields.io/badge/arXiv-paper-b31b1b?logo=arxiv&logoColor=white" alt="Paper"></a>&nbsp;&nbsp;<a href="https://gems-gen.github.io"><img src="https://img.shields.io/badge/%F0%9F%8C%90%20Project-Page-2563eb" alt="Project Page"></a>&nbsp;&nbsp;
-<!-- <a href=""><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Paper-ffc107" alt="Paper"></a> -->
+<a href="https://huggingface.co/papers/2603.28088"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Paper-ffc107" alt="Paper"></a>
 
 
 
@@ -83,8 +83,6 @@ We provide full evaluation code for **CREA** and **ArtiMuse**. For other tasks, 
 
 ### Skill
 Skills are summarized from previous works. You can also add your own by referring to `agent/skills`.
-
-### More details will be available later today.
 
 ### Citation
 If you find our work useful, please consider citing:
