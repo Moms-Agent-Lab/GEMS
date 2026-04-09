@@ -1,10 +1,10 @@
-"""Unit tests for ClawVerifier (Anthropic client mocked)."""
+"""Unit tests for ClawVerifier (litellm.completion mocked)."""
 
 from __future__ import annotations
 
 import base64
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -27,22 +27,29 @@ class TestDetectMediaType:
 
 
 # ---------------------------------------------------------------------------
-# Helpers to build mock Anthropic responses
+# Helpers — build LiteLLM / OpenAI-format mock responses
 # ---------------------------------------------------------------------------
 
 
-def _text_response(text: str) -> MagicMock:
-    content = MagicMock()
-    content.text = text
+def _litellm_text_response(text: str) -> MagicMock:
+    """Build a litellm.completion response returning plain text."""
+    message = MagicMock()
+    message.content = text
+    message.tool_calls = None
+
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "stop"
+
     resp = MagicMock()
-    resp.content = [content]
+    resp.choices = [choice]
     return resp
 
 
-def _make_verifier(mock_client: MagicMock) -> ClawVerifier:
+def _make_verifier() -> ClawVerifier:
+    """Create a ClawVerifier without calling __init__ (no API key needed)."""
     verifier = ClawVerifier.__new__(ClawVerifier)
-    verifier.client = mock_client
-    verifier.model = "claude-test"
+    verifier.model = "anthropic/claude-test"
     verifier.score_weights = (0.6, 0.4)
     verifier.max_workers = 2
     return verifier
@@ -55,21 +62,23 @@ def _make_verifier(mock_client: MagicMock) -> ClawVerifier:
 
 class TestDecomposePrompt:
     def test_parses_json_array(self) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = _text_response(
-            '["Is it red?", "Is there a fox?"]'
-        )
-        v = _make_verifier(mock_client)
-        questions = v._decompose_prompt("a red fox")
+        v = _make_verifier()
+        with patch(
+            "litellm.completion",
+            return_value=_litellm_text_response('["Is it red?", "Is there a fox?"]'),
+        ):
+            questions = v._decompose_prompt("a red fox")
         assert questions == ["Is it red?", "Is there a fox?"]
 
     def test_falls_back_to_line_parse(self) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = _text_response(
-            "Here are the questions:\nIs it red?\nIs there a fox?"
-        )
-        v = _make_verifier(mock_client)
-        questions = v._decompose_prompt("a red fox")
+        v = _make_verifier()
+        with patch(
+            "litellm.completion",
+            return_value=_litellm_text_response(
+                "Here are the questions:\nIs it red?\nIs there a fox?"
+            ),
+        ):
+            questions = v._decompose_prompt("a red fox")
         assert len(questions) == 2
 
 
@@ -80,13 +89,11 @@ class TestDecomposePrompt:
 
 class TestCheckRequirements:
     def test_all_yes_gives_full_score(self, png_bytes: bytes) -> None:
-        mock_client = MagicMock()
-        # decompose → 2 questions; each check → yes
-        mock_client.messages.create.side_effect = [
-            _text_response('["Is there a fox?", "Is the fox red?"]'),
-            _text_response("yes"),
-            _text_response("yes"),
-            _text_response(
+        side_effects = [
+            _litellm_text_response('["Is there a fox?", "Is the fox red?"]'),
+            _litellm_text_response("yes"),
+            _litellm_text_response("yes"),
+            _litellm_text_response(
                 json.dumps(
                     {
                         "overall_assessment": "Perfect",
@@ -97,18 +104,18 @@ class TestCheckRequirements:
                 )
             ),
         ]
-        v = _make_verifier(mock_client)
-        result = v.verify(png_bytes, "a red fox")
+        v = _make_verifier()
+        with patch("litellm.completion", side_effect=side_effects):
+            result = v.verify(png_bytes, "a red fox")
         assert result.passed == ["Is there a fox?", "Is the fox red?"]
         assert result.failed == []
 
     def test_partial_yes_no(self, png_bytes: bytes) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = [
-            _text_response('["Q1?", "Q2?"]'),
-            _text_response("yes"),
-            _text_response("no"),
-            _text_response(
+        side_effects = [
+            _litellm_text_response('["Q1?", "Q2?"]'),
+            _litellm_text_response("yes"),
+            _litellm_text_response("no"),
+            _litellm_text_response(
                 json.dumps(
                     {
                         "overall_assessment": "Partial",
@@ -119,17 +126,17 @@ class TestCheckRequirements:
                 )
             ),
         ]
-        v = _make_verifier(mock_client)
-        result = v.verify(png_bytes, "prompt")
+        v = _make_verifier()
+        with patch("litellm.completion", side_effect=side_effects):
+            result = v.verify(png_bytes, "prompt")
         assert len(result.passed) == 1
         assert len(result.failed) == 1
 
     def test_media_type_jpeg_sent_to_api(self, jpeg_bytes: bytes) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = [
-            _text_response('["Q?"]'),
-            _text_response("yes"),
-            _text_response(
+        side_effects = [
+            _litellm_text_response('["Q?"]'),
+            _litellm_text_response("yes"),
+            _litellm_text_response(
                 json.dumps(
                     {
                         "overall_assessment": "ok",
@@ -140,10 +147,12 @@ class TestCheckRequirements:
                 )
             ),
         ]
-        v = _make_verifier(mock_client)
-        v.verify(jpeg_bytes, "prompt")
-        # Check that at least one call used image/jpeg
-        all_calls = mock_client.messages.create.call_args_list
+        v = _make_verifier()
+        with patch("litellm.completion", side_effect=side_effects) as mock_completion:
+            v.verify(jpeg_bytes, "prompt")
+
+        # Check that at least one call used image/jpeg in the data-URI url
+        all_calls = mock_completion.call_args_list
         image_calls = [
             c
             for c in all_calls
@@ -151,8 +160,8 @@ class TestCheckRequirements:
                 msg.get("content")
                 and isinstance(msg["content"], list)
                 and any(
-                    part.get("type") == "image"
-                    and part.get("source", {}).get("media_type") == "image/jpeg"
+                    part.get("type") == "image_url"
+                    and "image/jpeg" in part.get("image_url", {}).get("url", "")
                     for part in msg["content"]
                     if isinstance(part, dict)
                 )
@@ -167,23 +176,25 @@ class TestCheckRequirements:
         must be identical (encoded once, not re-encoded per question).
         """
         call_b64_strings: list[str] = []
-        mock_client = MagicMock()
+        captured: list[MagicMock] = []
 
-        def capture_create(**kwargs):
+        def capture_completion(**kwargs):
             for msg in kwargs.get("messages", []):
                 content = msg.get("content", [])
                 if isinstance(content, list):
                     for part in content:
-                        if isinstance(part, dict) and part.get("type") == "image":
-                            call_b64_strings.append(part["source"]["data"])
-            return _text_response("yes")
+                        if isinstance(part, dict) and part.get("type") == "image_url":
+                            url = part["image_url"]["url"]
+                            # data URI format: "data:{media_type};base64,{b64}"
+                            call_b64_strings.append(url.split(",", 1)[1])
+            return _litellm_text_response("yes")
 
-        mock_client.messages.create.side_effect = [
-            _text_response('["Q1?", "Q2?", "Q3?"]'),
-            capture_create,
-            capture_create,
-            capture_create,
-            _text_response(
+        side_effects: list = [
+            _litellm_text_response('["Q1?", "Q2?", "Q3?"]'),
+            capture_completion,
+            capture_completion,
+            capture_completion,
+            _litellm_text_response(
                 json.dumps(
                     {
                         "overall_assessment": "ok",
@@ -194,8 +205,10 @@ class TestCheckRequirements:
                 )
             ),
         ]
-        v = _make_verifier(mock_client)
-        v.verify(png_bytes, "a prompt")
+        _ = captured  # suppress unused warning
+        v = _make_verifier()
+        with patch("litellm.completion", side_effect=side_effects):
+            v.verify(png_bytes, "a prompt")
 
         expected_b64 = base64.standard_b64encode(png_bytes).decode()
         for s in call_b64_strings:
@@ -230,14 +243,14 @@ class TestRegionIssues:
             ],
             "evolution_suggestions": ["Add depth ControlNet"],
         }
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = [
-            _text_response('["Q?"]'),
-            _text_response("yes"),
-            _text_response(json.dumps(detail)),
+        side_effects = [
+            _litellm_text_response('["Q?"]'),
+            _litellm_text_response("yes"),
+            _litellm_text_response(json.dumps(detail)),
         ]
-        v = _make_verifier(mock_client)
-        result = v.verify(png_bytes, "a portrait")
+        v = _make_verifier()
+        with patch("litellm.completion", side_effect=side_effects):
+            result = v.verify(png_bytes, "a portrait")
         assert len(result.region_issues) == 2
         assert result.region_issues[0].region == "background"
         assert result.region_issues[0].severity == "high"
@@ -252,12 +265,11 @@ class TestRegionIssues:
 
 class TestScoreBlending:
     def test_blends_req_and_detail(self, png_bytes: bytes) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = [
-            _text_response('["Q1?", "Q2?"]'),
-            _text_response("yes"),
-            _text_response("no"),  # 50% requirement pass rate
-            _text_response(
+        side_effects = [
+            _litellm_text_response('["Q1?", "Q2?"]'),
+            _litellm_text_response("yes"),
+            _litellm_text_response("no"),  # 50% requirement pass rate
+            _litellm_text_response(
                 json.dumps(
                     {
                         "overall_assessment": "ok",
@@ -269,25 +281,25 @@ class TestScoreBlending:
             ),
         ]
         v = ClawVerifier.__new__(ClawVerifier)
-        v.client = mock_client
-        v.model = "test"
+        v.model = "anthropic/claude-test"
         v.score_weights = (0.5, 0.5)
         v.max_workers = 2
-        result = v.verify(png_bytes, "p")
+        with patch("litellm.completion", side_effect=side_effects):
+            result = v.verify(png_bytes, "p")
         # 0.5 * 0.5 + 0.5 * 0.8 = 0.65
         assert abs(result.score - 0.65) < 0.01
 
     def test_uses_req_only_when_detail_score_none(self, png_bytes: bytes) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.side_effect = [
-            _text_response('["Q?"]'),
-            _text_response("yes"),
-            _text_response(
+        side_effects = [
+            _litellm_text_response('["Q?"]'),
+            _litellm_text_response("yes"),
+            _litellm_text_response(
                 '{"overall_assessment": "err", "region_issues": [], "evolution_suggestions": []}'
             ),
         ]
-        v = _make_verifier(mock_client)
-        result = v.verify(png_bytes, "p")
+        v = _make_verifier()
+        with patch("litellm.completion", side_effect=side_effects):
+            result = v.verify(png_bytes, "p")
         assert result.score == pytest.approx(1.0)
 
 

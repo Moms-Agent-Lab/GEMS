@@ -1,26 +1,25 @@
-"""Unit tests for ClawAgent tool dispatch (Anthropic mocked)."""
+"""Unit tests for ClawAgent tool dispatch (litellm mocked)."""
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from comfyclaw.agent import ClawAgent
 from comfyclaw.workflow import WorkflowManager
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers — build LiteLLM / OpenAI-format mock responses
 # ---------------------------------------------------------------------------
 
 
 def _make_agent(
-    mock_client: MagicMock,
     server_address: str = "127.0.0.1:8188",
     pinned_image_model: str | None = None,
 ) -> ClawAgent:
     agent = ClawAgent.__new__(ClawAgent)
-    agent.client = mock_client
-    agent.model = "claude-test"
+    agent.model = "anthropic/claude-test"
     agent.server_address = server_address
     from comfyclaw.skill_manager import SkillManager
 
@@ -31,42 +30,52 @@ def _make_agent(
     return agent
 
 
-def _tool_use_block(name: str, inputs: dict, block_id: str = "tool_1") -> SimpleNamespace:
-    return SimpleNamespace(type="tool_use", id=block_id, name=name, input=inputs)
+def _litellm_tool_call(name: str, inputs: dict, call_id: str = "call_1") -> SimpleNamespace:
+    """Build a single tool_call object in OpenAI/LiteLLM format."""
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=json.dumps(inputs)),
+    )
 
 
-def _tool_use_response(name: str, inputs: dict, block_id: str = "tool_1") -> MagicMock:
+def _litellm_tool_response(*tool_calls: SimpleNamespace) -> MagicMock:
+    """Build a litellm.completion response that requests tool calls."""
+    message = MagicMock()
+    message.content = None
+    message.tool_calls = list(tool_calls)
+
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "tool_calls"
+
     resp = MagicMock()
-    resp.stop_reason = "tool_use"
-    resp.content = [_tool_use_block(name, inputs, block_id)]
+    resp.choices = [choice]
     return resp
 
 
-def _end_turn_response(text: str = "Done.") -> MagicMock:
-    content = MagicMock()
-    content.type = "text"
-    content.text = text
-    resp = MagicMock()
-    resp.stop_reason = "end_turn"
-    resp.content = [content]
-    return resp
+def _litellm_stop_response(text: str = "Done.") -> MagicMock:
+    """Build a litellm.completion response that signals end of turn."""
+    message = MagicMock()
+    message.content = text
+    message.tool_calls = None
 
+    choice = MagicMock()
+    choice.message = message
+    choice.finish_reason = "stop"
 
-def _finalize_response(rationale: str = "Test rationale.") -> MagicMock:
     resp = MagicMock()
-    resp.stop_reason = "tool_use"
-    resp.content = [_tool_use_block("finalize_workflow", {"rationale": rationale})]
+    resp.choices = [choice]
     return resp
 
 
 # ---------------------------------------------------------------------------
-# Direct tool dispatch tests (unit-level)
+# Direct tool dispatch tests (unit-level, no LLM call needed)
 # ---------------------------------------------------------------------------
 
 
 class TestDispatch:
     def test_set_param_mutates_workflow(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch(
             "set_param", {"node_id": "3", "param_name": "steps", "value": 50}, wm
         )
@@ -75,7 +84,7 @@ class TestDispatch:
         assert stop is False
 
     def test_add_node_returns_id(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch("add_node", {"class_type": "VAEDecode", "inputs": {}}, wm)
         assert "VAEDecode" in result
         assert stop is False
@@ -84,7 +93,7 @@ class TestDispatch:
 
     def test_connect_nodes(self, wm: WorkflowManager) -> None:
         nid = wm.add_node("VAEDecode")
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch(
             "connect_nodes",
             {
@@ -99,24 +108,24 @@ class TestDispatch:
         assert stop is False
 
     def test_delete_node(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch("delete_node", {"node_id": "2"}, wm)
         assert "2" not in wm.workflow
         assert stop is False
 
     def test_finalize_stops_loop(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch("finalize_workflow", {"rationale": "All done."}, wm)
         assert stop is True
 
     def test_unknown_tool_returns_error(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch("does_not_exist", {}, wm)
         assert "❌" in result
         assert stop is False
 
     def test_tool_error_returns_error_string(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         # set_param on a non-existent node should produce a tool error, not raise
         result, stop = agent._dispatch(
             "set_param", {"node_id": "999", "param_name": "x", "value": 1}, wm
@@ -133,7 +142,7 @@ class TestDispatch:
 class TestAddLora:
     def test_rewires_model_and_clip_consumers(self, wm: WorkflowManager) -> None:
         """After add_lora_loader, KSampler should take model from LoraLoader[0]."""
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, _ = agent._dispatch(
             "add_lora_loader",
             {
@@ -163,7 +172,7 @@ class TestRegionalAttention:
     def test_no_meta_keyerror(self, wm: WorkflowManager) -> None:
         """Nodes without _meta should not raise KeyError."""
         wm.workflow["2"].pop("_meta", None)  # remove _meta from node 2
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         # Should not raise
         result, _ = agent._dispatch(
             "add_regional_attention",
@@ -178,7 +187,7 @@ class TestRegionalAttention:
         assert "✅" in result
 
     def test_ksampler_rewired(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         agent._dispatch(
             "add_regional_attention",
             {
@@ -206,7 +215,7 @@ class TestHiresFix:
         # Add a VAEDecode and SaveImage first so hires fix has something to re-wire
         decode_nid = wm.add_node("VAEDecode", samples=["3", 0], vae=["1", 2])
         save_nid = wm.add_node("SaveImage", images=[decode_nid, 0])
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         agent._dispatch(
             "add_hires_fix",
             {
@@ -237,48 +246,48 @@ class TestHiresFix:
 class TestQueryModels:
     def test_offline_returns_error_string(self, wm: WorkflowManager) -> None:
         # Use an address that won't respond
-        agent = _make_agent(MagicMock(), server_address="127.0.0.1:19999")
+        agent = _make_agent(server_address="127.0.0.1:19999")
         result, stop = agent._dispatch("query_available_models", {"model_type": "loras"}, wm)
         assert "❌" in result or "No" in result or "Could not" in result
         assert stop is False
 
     def test_unknown_model_type_returns_error(self, wm: WorkflowManager) -> None:
-        agent = _make_agent(MagicMock())
+        agent = _make_agent()
         result, stop = agent._dispatch("query_available_models", {"model_type": "unknown_type"}, wm)
         assert "❌" in result
         assert stop is False
 
 
 # ---------------------------------------------------------------------------
-# plan_and_patch integration (mocked Anthropic)
+# plan_and_patch integration (litellm.completion mocked)
 # ---------------------------------------------------------------------------
 
 
 class TestPlanAndPatch:
     def test_finalize_returns_rationale(self, wm: WorkflowManager) -> None:
-        mock_client = MagicMock()
-        # Round 1: report_evolution_strategy, then finalize
-        strategy_resp = MagicMock()
-        strategy_resp.stop_reason = "tool_use"
-        strategy_resp.content = [
-            _tool_use_block(
-                "report_evolution_strategy", {"strategy": "optimize", "top_issue": "quality"}, "b1"
-            ),
-        ]
-        finalize_resp = MagicMock()
-        finalize_resp.stop_reason = "tool_use"
-        finalize_resp.content = [
-            _tool_use_block("finalize_workflow", {"rationale": "All done."}, "b2"),
-        ]
-        mock_client.messages.create.side_effect = [strategy_resp, finalize_resp]
-        agent = _make_agent(mock_client)
-        rationale = agent.plan_and_patch(wm, "a red fox")
+        strategy_resp = _litellm_tool_response(
+            _litellm_tool_call(
+                "report_evolution_strategy",
+                {"strategy": "optimize", "top_issue": "quality"},
+                "call_1",
+            )
+        )
+        finalize_resp = _litellm_tool_response(
+            _litellm_tool_call("finalize_workflow", {"rationale": "All done."}, "call_2")
+        )
+
+        agent = _make_agent()
+        with patch("litellm.completion", side_effect=[strategy_resp, finalize_resp]):
+            rationale = agent.plan_and_patch(wm, "a red fox")
+
         assert rationale == "All done."
 
     def test_end_turn_stops_loop(self, wm: WorkflowManager) -> None:
-        mock_client = MagicMock()
-        mock_client.messages.create.return_value = _end_turn_response()
-        agent = _make_agent(mock_client)
-        rationale = agent.plan_and_patch(wm, "a prompt")
+        stop_resp = _litellm_stop_response("Done.")
+
+        agent = _make_agent()
+        with patch("litellm.completion", return_value=stop_resp) as mock_completion:
+            rationale = agent.plan_and_patch(wm, "a prompt")
+
         assert isinstance(rationale, str)
-        assert mock_client.messages.create.call_count == 1
+        assert mock_completion.call_count == 1

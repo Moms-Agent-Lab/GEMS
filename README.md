@@ -7,10 +7,15 @@
 
 **Agentic harness for self-evolving ComfyUI image-generation workflows.**
 
-ComfyClaw wraps ComfyUI in a Claude Sonnet agent loop that _grows_ the
-workflow topology in response to image quality feedback — adding LoRA loaders,
+ComfyClaw wraps ComfyUI in an LLM agent loop that _grows_ the workflow
+topology in response to image quality feedback — adding LoRA loaders,
 ControlNet branches, regional conditioning, and hires-fix passes until a
 configurable quality threshold is reached.
+
+Use **any LLM provider** supported by [LiteLLM](https://docs.litellm.ai/docs/providers):
+Anthropic Claude, OpenAI GPT-4o, Google Gemini, local Ollama models, and 100+
+more — including mixing providers (e.g. a fast local model for the agent,
+a vision-capable cloud model for the verifier).
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -18,13 +23,14 @@ configurable quality threshold is reached.
 │                                                                     │
 │  ┌──────────┐  evolve  ┌──────────────┐  submit  ┌──────────────┐  │
 │  │  Agent   │ ───────► │  ComfyUI API │ ───────► │  Image out   │  │
-│  │ (Claude) │          │  (HTTP/WS)   │          └──────┬───────┘  │
-│  └────┬─────┘          └──────────────┘                 │          │
-│       │  feedback                                        │ verify   │
+│  │  Agent   │          │  (HTTP/WS)   │          └──────┬───────┘  │
+│  │  (LLM)   │          └──────────────┘                 │          │
+│  └────┬─────┘                                           │ verify   │
+│       │  feedback                                        │          │
 │       │ ◄────────────────────────────────────────────── ▼          │
 │       │                                          ┌──────────────┐  │
 │       │                                          │  Verifier    │  │
-│  ┌────┴─────┐  broadcast  ┌──────────────────┐  │ (Claude vis) │  │
+│  ┌────┴─────┐  broadcast  ┌──────────────────┐  │  (LLM+vis)   │  │
 │  │  Memory  │             │ ComfyClaw-Sync    │  └──────────────┘  │
 │  │          │             │ (ComfyUI plugin)  │                    │
 │  └──────────┘             │ live graph update │                    │
@@ -40,7 +46,7 @@ configurable quality threshold is reached.
 
 - Python 3.10+
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (Desktop or server)
-- An [Anthropic API key](https://console.anthropic.com/)
+- An API key for your chosen LLM provider (see [Supported providers](#supported-llm-providers))
 
 ### 1. Install uv (recommended)
 
@@ -82,8 +88,9 @@ pip install "comfyclaw[sync]"     # from PyPI
 
 | Extra | Packages | When needed |
 |---|---|---|
-| *(none)* | `anthropic`, `python-dotenv` | Always |
+| *(none)* | `litellm`, `python-dotenv` | Always |
 | `sync` | `websockets>=12` | Live graph updates in ComfyUI canvas |
+| `providers` | `anthropic>=0.25` | Direct Anthropic SDK (optional; litellm handles it) |
 | `dev` (group) | `pytest`, `ruff`, `mypy`, … | Development & CI |
 
 ### 3. Configure environment
@@ -91,7 +98,10 @@ pip install "comfyclaw[sync]"     # from PyPI
 ```bash
 cp .env.example .env
 # Open .env and set at minimum:
-#   ANTHROPIC_API_KEY=sk-ant-...
+#   ANTHROPIC_API_KEY=sk-ant-...   (for Anthropic — default provider)
+#   OPENAI_API_KEY=sk-...           (for OpenAI)
+#   GEMINI_API_KEY=...              (for Google Gemini)
+#   (no key needed for local Ollama)
 #   COMFYUI_ADDR=127.0.0.1:8188
 ```
 
@@ -140,17 +150,70 @@ ComfyUI canvas:
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | *(required)* | Anthropic API key for Claude |
+| `ANTHROPIC_API_KEY` | — | API key for Anthropic models (`anthropic/…`) |
+| `OPENAI_API_KEY` | — | API key for OpenAI models (`openai/…`) |
+| `GEMINI_API_KEY` | — | API key for Google Gemini models (`gemini/…`) |
+| `GROQ_API_KEY` | — | API key for Groq models (`groq/…`) |
 | `COMFYUI_DIR` | `~/Documents/ComfyUI` | Path to your ComfyUI installation |
 | `COMFYUI_ADDR` | `127.0.0.1:8188` | `host:port` of a running ComfyUI server |
+| `COMFYCLAW_MODEL` | `anthropic/claude-sonnet-4-5` | LiteLLM model string for the agent |
+| `COMFYCLAW_VERIFIER_MODEL` | *(same as model)* | LiteLLM model for the vision verifier |
+
+---
+
+## Supported LLM providers
+
+ComfyClaw uses [LiteLLM](https://docs.litellm.ai/docs/providers) to route to any
+provider.  Set the matching environment variable and pass the model string with
+the provider prefix:
+
+| Provider | Model string format | Required env var |
+|---|---|---|
+| **Anthropic** (default) | `anthropic/claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
+| **OpenAI** | `openai/gpt-4o` | `OPENAI_API_KEY` |
+| **Google Gemini** | `gemini/gemini-2.0-flash` | `GEMINI_API_KEY` |
+| **Groq** | `groq/llama-3.3-70b-versatile` | `GROQ_API_KEY` |
+| **Azure OpenAI** | `azure/<deployment-name>` | `AZURE_API_KEY` + `AZURE_API_BASE` |
+| **Local Ollama** | `ollama/llama3.1` | *(none — no API key needed)* |
+| **Local vLLM** | `openai/my-model` + `--base-url` | *(none)* |
+
+```bash
+# Anthropic (default)
+export ANTHROPIC_API_KEY=sk-ant-...
+comfyclaw run --model anthropic/claude-sonnet-4-5 --workflow w.json --prompt "..."
+
+# OpenAI
+export OPENAI_API_KEY=sk-...
+comfyclaw run --model openai/gpt-4o --workflow w.json --prompt "..."
+
+# Google Gemini
+export GEMINI_API_KEY=...
+comfyclaw run --model gemini/gemini-2.0-flash --workflow w.json --prompt "..."
+
+# Fully local — Ollama agent, LLaVA verifier (no API key required)
+comfyclaw run --model ollama/llama3.1 --verifier-model ollama/llava \
+  --workflow w.json --prompt "..."
+
+# Mix providers: cheap local agent + strong cloud verifier
+export ANTHROPIC_API_KEY=sk-ant-...
+comfyclaw run --model ollama/llama3.1 \
+             --verifier-model anthropic/claude-sonnet-4-5 \
+             --workflow w.json --prompt "..."
+```
+
+> **Vision requirement**: the `--verifier-model` must support image inputs.
+> Good choices: `anthropic/claude-*`, `openai/gpt-4o`, `gemini/gemini-*`, `ollama/llava`.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Set your API key (or put it in .env)
-export ANTHROPIC_API_KEY=sk-ant-...
+# 1. Set your provider API key (or put it in .env)
+export ANTHROPIC_API_KEY=sk-ant-...    # Anthropic (default)
+# export OPENAI_API_KEY=sk-...           # OpenAI alternative
+# export GEMINI_API_KEY=...              # Gemini alternative
+# (no key needed for local Ollama)
 
 # 2. Install the ComfyUI live-sync plugin (one-time)
 uv run comfyclaw install-node
@@ -193,7 +256,8 @@ comfyclaw node-path     Print the path to the bundled plugin directory
 |---|---|---|
 | `--workflow PATH` | *(required)* | API-format ComfyUI workflow JSON |
 | `--prompt TEXT` | *(required)* | Image generation prompt |
-| `--model NAME` | `claude-sonnet-4-5` | Claude model for agent and verifier |
+| `--model MODEL` | `anthropic/claude-sonnet-4-5` | LiteLLM model for the agent (e.g. `openai/gpt-4o`, `gemini/gemini-2.0-flash`, `ollama/llama3.1`) |
+| `--verifier-model MODEL` | *(same as --model)* | LiteLLM model for the vision verifier (must support images) |
 | `--iterations N` | `3` | Maximum agent–generate–verify cycles |
 | `--threshold SCORE` | `0.85` | Stop early when verifier score ≥ this value |
 | `--sync-port PORT` | `8765` | WebSocket port for live graph sync |
@@ -212,8 +276,9 @@ comfyclaw node-path     Print the path to the bundled plugin directory
 from comfyclaw import ClawHarness, HarnessConfig
 
 cfg = HarnessConfig(
-    api_key="sk-ant-...",       # or use ANTHROPIC_API_KEY env var
+    # api_key="sk-ant-..."  # optional: or set ANTHROPIC_API_KEY env var
     server_address="127.0.0.1:8188",
+    model="anthropic/claude-sonnet-4-5",  # any LiteLLM model string
     max_iterations=3,
     success_threshold=0.85,
 )
@@ -230,9 +295,10 @@ if image_bytes:
 ```python
 @dataclass
 class HarnessConfig:
-    api_key: str                       # Anthropic API key
+    api_key: str = ""                  # optional; or set provider env var
     server_address: str = "127.0.0.1:8188"
-    model: str = "claude-sonnet-4-5"
+    model: str = "anthropic/claude-sonnet-4-5"  # any LiteLLM model string
+    verifier_model: str | None = None  # None = use model; set for vision-specific model
     max_iterations: int = 3
     success_threshold: float = 0.85    # stop early when score ≥ this
     sync_port: int = 8765              # 0 = disable live sync
@@ -331,7 +397,7 @@ main generation loop.
 
 ## Agent tools
 
-The Claude agent has 14 tools grouped by category:
+The LLM agent has 14 tools grouped by category:
 
 | Category | Tool | What it does |
 |---|---|---|
@@ -496,7 +562,7 @@ To get the API format from ComfyUI: **Workflow → Export (API)** in the menu.
 ### Running the tests
 
 ```bash
-# All 136 tests (fully offline — Anthropic API mocked)
+# All tests (fully offline — litellm.completion mocked)
 uv run pytest
 
 # Verbose, specific module
@@ -534,8 +600,8 @@ comfyclaw/
 │   ├── __init__.py          custom_node_path(), public re-exports
 │   ├── client.py            ComfyClient — HTTP REST + polling
 │   ├── workflow.py          WorkflowManager — graph mutations
-│   ├── agent.py             ClawAgent — Claude tool-use loop (14 tools)
-│   ├── verifier.py          ClawVerifier — Claude vision QA
+│   ├── agent.py             ClawAgent — LLM tool-use loop via LiteLLM (14 tools)
+│   ├── verifier.py          ClawVerifier — LLM vision QA via LiteLLM
 │   ├── memory.py            ClawMemory — per-run attempt history
 │   ├── sync_server.py       SyncServer — WebSocket broadcast thread
 │   ├── skill_manager.py     SkillManager — Agent Skills spec loader
