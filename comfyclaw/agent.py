@@ -9,6 +9,7 @@ Anthropic, OpenAI, Google Gemini, local Ollama, etc.
 Tool categories
 ---------------
 Inspection  : inspect_workflow, query_available_models
+Prompt      : set_prompt  (auto-resolves sampler→encoder links; no node ID needed)
 Basic edit  : set_param, add_node, connect_nodes, delete_node
 LoRA        : add_lora_loader
 ControlNet  : add_controlnet
@@ -45,12 +46,42 @@ Iteration strategy
 ------------------
 1. Call report_evolution_strategy first: state your plan and the top issue.
 2. Call inspect_workflow to see the current topology.
-3. If a relevant skill is listed in <available_skills>, call read_skill to load
+3. Call set_prompt — craft a detailed, professional positive prompt AND a strong
+   negative prompt based on the user's goal (see "Prompt engineering" below).
+   Do this EVERY iteration, even if you also plan structural changes.
+4. If a relevant skill is listed in <available_skills>, call read_skill to load
    its full instructions BEFORE applying that upgrade.
-4. Call query_available_models BEFORE adding any LoRA or ControlNet node.
-5. Apply structural upgrades (LoRA / ControlNet / regional / hires / inpaint).
-6. Also tune prompt text, steps, CFG, and seed as needed.
-7. Call finalize_workflow when done.
+5. Call query_available_models BEFORE adding any LoRA or ControlNet node.
+6. Apply structural upgrades (LoRA / ControlNet / regional / hires / inpaint).
+7. Tune sampler parameters (steps, CFG, seed) as needed.
+8. Call finalize_workflow when done.
+
+Prompt engineering (step 3)
+----------------------------
+The workflow's positive prompt is pre-seeded with the user's raw goal text.
+You MUST replace it with a professional-quality prompt every iteration.
+
+Positive prompt — structure:
+  [subject & scene], [style], [lighting], [camera/lens], [quality boosters]
+  • Expand every meaningful concept: vague nouns → vivid adjectives + nouns.
+  • Add artistic / photographic style: "cinematic", "concept art", "photorealistic",
+    "watercolor painting", "isometric", etc.
+  • Add lighting: "golden hour", "dramatic rim lighting", "neon glow", "soft diffuse".
+  • Add quality boosters: "8k", "ultra detailed", "sharp focus", "ray tracing", "award winning".
+  • If the image has multiple subjects/regions, describe each clearly.
+
+Negative prompt — always include these baseline entries, then add scene-specific ones:
+  "blurry, out of focus, low quality, low resolution, noisy, grainy, jpeg artifacts,
+   watermark, text, signature, ugly, bad anatomy, deformed, disfigured,
+   poorly drawn hands, extra fingers, mutated limbs, cloned face, plastic skin"
+
+Example (input: "a cyberpunk city at night"):
+  positive: "a futuristic cyberpunk city skyline at night, towering neon-lit skyscrapers,
+   wet reflective streets, holographic advertisements, dense rain, cinematic composition,
+   dramatic volumetric lighting, wide angle lens 24mm, 8k, photorealistic, ultra detailed,
+   sharp focus, ray tracing, blade runner aesthetic"
+  negative: "blurry, low quality, noisy, watermark, text, bad anatomy, deformed, ugly,
+   cartoon, anime, daytime, sunny, empty street"
 
 Using skills (progressive disclosure)
 --------------------------------------
@@ -317,6 +348,41 @@ _TOOLS: list[dict] = [
         },
     ),
     _tool(
+        "set_prompt",
+        (
+            "Set the positive and/or negative prompt text across the whole workflow. "
+            "Automatically locates the CLIPTextEncode (or equivalent) nodes connected "
+            "to every sampler — no node ID required. "
+            "Call this EARLY to replace the raw user goal with a detailed, "
+            "professional-quality prompt.  Pass empty string to leave a slot unchanged."
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "positive_text": {
+                    "type": "string",
+                    "description": (
+                        "Expanded positive prompt.  Structure: "
+                        "[subject & scene], [style], [lighting], [camera/lens], [quality boosters].  "
+                        "Example: 'a futuristic city skyline at night, neon reflections on wet streets, "
+                        "cyberpunk aesthetic, dramatic cinematic lighting, wide angle lens, "
+                        "8k, photorealistic, ultra detailed, sharp focus, ray tracing'."
+                    ),
+                },
+                "negative_text": {
+                    "type": "string",
+                    "description": (
+                        "Negative prompt listing artefacts and failure modes to suppress.  "
+                        "Always include baseline: 'blurry, low quality, low resolution, noisy, "
+                        "watermark, text, bad anatomy, deformed, ugly'.  "
+                        "Add model- or scene-specific negatives as needed."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    ),
+    _tool(
         "report_evolution_strategy",
         "Declare your evolution plan BEFORE making changes.",
         {
@@ -509,6 +575,26 @@ class ClawAgent:
 
                 case "query_available_models":
                     return self._query_models(inputs["model_type"]), False
+
+                case "set_prompt":
+                    pos = inputs.get("positive_text") or ""
+                    neg = inputs.get("negative_text") or ""
+                    pos_nodes, neg_nodes = wm.inject_prompt(
+                        positive=pos if pos else None,
+                        negative=neg if neg else None,
+                    )
+                    self._notify(wm)
+                    parts = []
+                    if pos_nodes:
+                        parts.append(f"positive → nodes {pos_nodes}: {pos!r}")
+                    if neg_nodes:
+                        parts.append(f"negative → nodes {neg_nodes}: {neg!r}")
+                    if not parts:
+                        return (
+                            "⚠️ set_prompt: no CLIPTextEncode nodes found connected to a sampler. Use set_param directly.",
+                            False,
+                        )
+                    return "✅ " + "; ".join(parts), False
 
                 case "set_param":
                     wm.set_param(str(inputs["node_id"]), inputs["param_name"], inputs["value"])
@@ -898,7 +984,32 @@ class ClawAgent:
         memory_summary: str | None,
         iteration: int,
     ) -> str:
-        parts = [f"## Image Prompt\n{original_prompt}", f"## Iteration\n{iteration}"]
+        parts = [
+            f"## Image Goal (user's original request)\n{original_prompt}",
+            f"## Iteration\n{iteration}",
+        ]
+
+        # Expose the current positive prompt text so the agent can see exactly
+        # what the baseline looks like and craft an improved version.
+        if workflow_manager:
+            current_positive: str | None = None
+            for node in workflow_manager.workflow.values():
+                if node.get("class_type") in ("CLIPTextEncode", "CLIPTextEncodeSDXL"):
+                    text_val = node.get("inputs", {}).get("text") or node.get("inputs", {}).get(
+                        "text_g"
+                    )
+                    if isinstance(text_val, str) and text_val.strip():
+                        current_positive = text_val.strip()
+                        break
+            if current_positive:
+                parts.append(
+                    f"## Current Positive Prompt (baseline — needs refinement)\n{current_positive}\n\n"
+                    "Use `set_prompt` to replace this with a detailed, high-quality version."
+                )
+            else:
+                parts.append(
+                    "## Current Positive Prompt\n(none — call `set_prompt` to craft one from the goal above)"
+                )
 
         # Detect the active checkpoint / UNET model from the workflow and surface
         # it prominently so the agent can match it against model-specific skills
