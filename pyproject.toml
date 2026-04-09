@@ -32,6 +32,7 @@ classifiers = [
 # Core runtime dependencies (minimal — websockets optional for sync)
 dependencies = [
     "litellm>=1.0",
+    "pillow>=10",
     "python-dotenv>=1.0",
     "pyyaml>=6",
 ]
