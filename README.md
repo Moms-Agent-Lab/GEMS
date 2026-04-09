@@ -241,6 +241,85 @@ python3 run_comfy_claw.py --dry-run
 
 ---
 
+## Sample runs
+
+These two runs use the same `qwen_workflow_api.json` base workflow and Qwen-Image-2512
+to illustrate how agent quality affects the outcome.
+
+---
+
+### Case 1 — Claude Sonnet 4.5 · Wildlife photography
+
+```bash
+uv run comfyclaw run \
+  --workflow qwen_workflow_api.json \
+  --prompt "A majestic red fox sitting in a misty ancient forest at dawn, photorealistic wildlife photography" \
+  --iterations 2
+```
+
+**What the agent did (iteration 1):**
+
+1. Called `read_skill("qwen-image-2512")` → learned model-specific parameters
+2. Called `read_skill("photorealistic")` and `read_skill("high-quality")`
+3. Called `set_prompt` with an expanded prompt:
+   - Rich spatial composition (fox on mossy log, ferns foreground, old-growth trees behind)
+   - Lighting details: golden volumetric dawn light, rim lighting, atmospheric mist
+   - Technical photography style: 300 mm f/2.8, shallow DoF, National Geographic aesthetic
+   - Chinese-language negative prompt (Qwen understands both languages)
+4. Set resolution to **1472 × 1104** (Qwen's 4:3 Lightning bucket)
+5. Confirmed optimal Lightning settings: `steps=4, cfg=1.0, euler/simple`
+
+**Result:**
+
+| Metric | Value |
+|--------|-------|
+| Score | **0.89 / 1.00** |
+| Threshold | 0.85 |
+| Outcome | ✅ Passed — **stopped early after iteration 1** |
+| Passed checks | Fox present, red colour, sitting pose, forest, ancient trees, mist, dawn lighting, photorealistic, majestic posture |
+| Failed checks | "Wildlife photography style" (minor stylistic gap) |
+
+**Verifier summary:** *"The image is a high-quality, photorealistic rendering of a red fox in a forest environment with excellent lighting, composition, and atmospheric effects."*
+
+---
+
+### Case 2 — Ollama Gemma4 (e4b) · Cyberpunk city
+
+```bash
+uv run comfyclaw run \
+  --workflow qwen_workflow_api.json \
+  --model ollama/gemma4:e4b \
+  --verifier-model ollama/gemma4:e4b \
+  --image-model "qwen_image_2512_fp8_e4m3fn.safetensors" \
+  --iterations 3 \
+  --prompt "a futuristic cyberpunk city skyline at night, neon lights, rain, 8k"
+```
+
+**What the agent did:**
+
+Gemma4 correctly *planned* multi-step evolutions (ControlNet Canny, hires-fix, prompt
+overhaul) but did not reliably execute the corresponding tool calls — `nodes 11→11 (+0)`
+in all three iterations. The harness still seeded the correct user prompt before each
+iteration via `inject_prompt`, so images were generated with the right subject.
+
+**Result:**
+
+| Iteration | Score | Key verifier notes |
+|-----------|-------|--------------------|
+| 1 | 0.36 | Cyberpunk atmosphere present; missing neon signs, wet reflections, night lighting |
+| 2 | 0.36 | Same structural gap; agent planned ControlNet but did not execute |
+| 3 | **0.49** | Rain and reflections now passed; architecture/neon still weak |
+
+**Verifier summary (iter 3):** *"Highly atmospheric piece, perfectly capturing the
+cyberpunk aesthetic. Lighting, scale, and neon saturation are excellent."*
+
+**Takeaway:** Gemma4 is a capable *vision verifier* but its tool-call execution is
+less reliable than Claude for complex multi-step workflow modifications.  Use a larger
+or more capable model for the agent role when precise tool use is required, and
+reserve Gemma4 (or another local model) for the `--verifier-model` slot.
+
+---
+
 ## CLI reference
 
 ```
