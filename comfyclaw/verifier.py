@@ -1,25 +1,29 @@
 """
-ClawVerifier — Claude vision verifier with region-level spatial analysis.
+ClawVerifier — LLM vision verifier with region-level spatial analysis.
 
 Verification pipeline
 ---------------------
-1. ``_decompose_prompt``  — ask Claude to break the prompt into yes/no questions.
-2. ``_check_requirements`` — ask Claude yes/no for each question in parallel
+1. ``_decompose_prompt``  — ask the LLM to break the prompt into yes/no questions.
+2. ``_check_requirements`` — ask the LLM yes/no for each question in parallel
                               (single base64 encode, shared across all threads).
 3. ``_detailed_analysis``  — single-pass request returning region issues,
                               evolution suggestions, and a holistic quality score.
 4. Blend the requirement score and the detail score into a final ``VerifierResult``.
+
+Any vision-capable model supported by LiteLLM can be used — Anthropic Claude,
+OpenAI GPT-4o, Google Gemini, local LLaVA via Ollama, etc.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
-import anthropic
+import litellm
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -146,8 +150,12 @@ class ClawVerifier:
     """
     Parameters
     ----------
-    api_key       : Anthropic API key.
-    model         : Claude model (must support vision).
+    api_key       : API key for the LLM provider.  Written into the appropriate
+                    env-var so LiteLLM can pick it up automatically.  You can
+                    also set the env-var directly and leave this empty.
+    model         : LiteLLM model string (must support vision), e.g.
+                    ``"anthropic/claude-sonnet-4-5"``, ``"openai/gpt-4o"``,
+                    ``"gemini/gemini-2.0-flash"``, ``"ollama/llava"``.
     score_weights : ``(requirement_weight, detail_weight)`` summing to 1.0.
                     Defaults to ``(0.6, 0.4)``.
     max_workers   : Parallel threads for yes/no requirement checks.
@@ -155,15 +163,13 @@ class ClawVerifier:
 
     def __init__(
         self,
-        api_key: str,
-        model: str = "claude-sonnet-4-5",
+        api_key: str = "",
+        model: str = "anthropic/claude-sonnet-4-5",
         score_weights: tuple[float, float] = (0.6, 0.4),
         max_workers: int = 6,
     ) -> None:
-        self.client = anthropic.Anthropic(
-            api_key=api_key,
-            base_url="https://api.anthropic.com",
-        )
+        if api_key:
+            os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
         self.model = model
         self.score_weights = score_weights
         self.max_workers = max_workers
@@ -228,13 +234,26 @@ class ClawVerifier:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def complete(self, prompt: str, max_tokens: int = 200) -> str:
+        """
+        Plain text completion — no image, no tools.
+
+        Used by the harness for lightweight summarisation tasks.
+        """
+        resp = litellm.completion(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (resp.choices[0].message.content or "").strip()
+
     def _decompose_prompt(self, prompt: str) -> list[str]:
-        resp = self.client.messages.create(
+        resp = litellm.completion(
             model=self.model,
             max_tokens=1024,
             messages=[{"role": "user", "content": _DECOMPOSE_PROMPT.format(prompt=prompt)}],
         )
-        text = resp.content[0].text.strip()
+        text = (resp.choices[0].message.content or "").strip()
         try:
             m = re.search(r"\[.*\]", text, re.DOTALL)
             return json.loads(m.group() if m else text)
@@ -249,29 +268,29 @@ class ClawVerifier:
     ) -> list[RequirementCheck]:
         """Check each question in parallel using pre-encoded image data."""
 
+        # OpenAI-style image_url with base64 data URI — LiteLLM translates
+        # this to the provider-specific format (Anthropic, Gemini, etc.).
+        image_block = {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
+        }
+
         def check_one(q: str) -> RequirementCheck:
             try:
-                resp = self.client.messages.create(
+                resp = litellm.completion(
                     model=self.model,
                     max_tokens=16,
                     messages=[
                         {
                             "role": "user",
                             "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": b64_data,
-                                    },
-                                },
+                                image_block,
                                 {"type": "text", "text": f"Answer only 'yes' or 'no'. {q}"},
                             ],
                         }
                     ],
                 )
-                ans = resp.content[0].text.strip().lower()
+                ans = (resp.choices[0].message.content or "").strip().lower()
                 return RequirementCheck(q, ans, "yes" in ans and "no" not in ans)
             except Exception as exc:
                 return RequirementCheck(q, f"error: {exc}", False)
@@ -281,22 +300,19 @@ class ClawVerifier:
             return list(ex.map(check_one, questions))
 
     def _detailed_analysis(self, b64_data: str, media_type: str, prompt: str) -> dict:
+        image_block = {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{b64_data}"},
+        }
         try:
-            resp = self.client.messages.create(
+            resp = litellm.completion(
                 model=self.model,
                 max_tokens=1500,
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": b64_data,
-                                },
-                            },
+                            image_block,
                             {
                                 "type": "text",
                                 "text": _DETAILED_ANALYSIS_PROMPT.format(prompt=prompt),
@@ -305,7 +321,7 @@ class ClawVerifier:
                     }
                 ],
             )
-            text = resp.content[0].text.strip()
+            text = (resp.choices[0].message.content or "").strip()
             m = re.search(r"\{.*\}", text, re.DOTALL)
             return json.loads(m.group() if m else text)
         except Exception as exc:

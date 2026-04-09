@@ -9,6 +9,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Multi-provider LLM support via LiteLLM
+- Replaced the hard `anthropic` SDK dependency with `litellm>=1.0` — any of the
+  100+ providers supported by LiteLLM can now be used as the agent or verifier
+  model (Anthropic, OpenAI, Google Gemini, Azure, Groq, local Ollama, vLLM, …).
+- New `--verifier-model` CLI flag and `COMFYCLAW_VERIFIER_MODEL` env-var allow
+  the vision verifier to use a different model from the agent (e.g. run the
+  agent on a cheap local model, but verify with a strong vision model).
+- New `ClawVerifier.complete()` method for lightweight text completions reused
+  by the harness experience-summary, replacing direct SDK access.
+- `HarnessConfig` gains an optional `verifier_model` field (defaults to `None`,
+  meaning the verifier uses the same model as the agent).
+- Default model string updated to `anthropic/claude-sonnet-4-5` (explicit
+  provider prefix) for unambiguous LiteLLM routing.
+
+#### Backward compatibility
+- Existing `ANTHROPIC_API_KEY` environment variable continues to work unchanged.
+- Bare Claude model names (e.g. `claude-sonnet-4-5`) are still auto-detected by
+  LiteLLM when `ANTHROPIC_API_KEY` is set.
+- The `api_key` field on `HarnessConfig` / `ClawAgent` / `ClawVerifier` remains
+  functional (written into `ANTHROPIC_API_KEY` env-var if provided).
+
+---
+
+
+### Added
+
 #### Qwen-Image-2512 support
 - New model skill `comfyclaw/skills/qwen-image-2512/SKILL.md` — covers the
   native ComfyUI FP8 pipeline (`UNETLoader` + `CLIPLoader` + `VAELoader` +

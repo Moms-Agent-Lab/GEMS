@@ -50,11 +50,8 @@ def _mock_verifier(score: float = 0.7) -> MagicMock:
     )
     verifier = MagicMock()
     verifier.verify.return_value = result
-    verifier.model = "claude-test"
-    verifier.client = MagicMock()
-    verifier.client.messages.create.return_value = MagicMock(
-        content=[MagicMock(text="Brief experience.")]
-    )
+    verifier.model = "anthropic/claude-test"
+    verifier.complete.return_value = "Brief experience."
     return verifier
 
 
@@ -175,11 +172,8 @@ class TestTopologyAccumulation:
 
         mock_verifier = MagicMock()
         mock_verifier.verify.side_effect = lambda *a, **kw: make_result()
-        mock_verifier.model = "test"
-        mock_verifier.client = MagicMock()
-        mock_verifier.client.messages.create.return_value = MagicMock(
-            content=[MagicMock(text="exp")]
-        )
+        mock_verifier.model = "anthropic/claude-test"
+        mock_verifier.complete.return_value = "exp"
 
         mock_client = _mock_comfy_client()
         cfg.max_iterations = 2

@@ -14,7 +14,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 authors = [{ name = "ComfyClaw Contributors" }]
-keywords = ["comfyui", "ai", "agent", "image-generation", "claude", "anthropic"]
+keywords = ["comfyui", "ai", "agent", "image-generation", "litellm", "multi-provider"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -31,7 +31,7 @@ classifiers = [
 
 # Core runtime dependencies (minimal — websockets optional for sync)
 dependencies = [
-    "anthropic>=0.25",
+    "litellm>=1.0",
     "python-dotenv>=1.0",
     "pyyaml>=6",
 ]
@@ -53,6 +53,8 @@ comfyclaw = "comfyclaw.cli:main"
 [project.optional-dependencies]
 # Live WebSocket sync to ComfyUI canvas
 sync = ["websockets>=12"]
+# Direct Anthropic SDK (not required — litellm bundles provider support)
+anthropic = ["anthropic>=0.25"]
 # Full install (all extras)
 all = ["comfyclaw[sync]"]
 

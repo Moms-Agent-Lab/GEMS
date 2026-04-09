@@ -1,8 +1,10 @@
 """
-ClawAgent — Claude Sonnet agent that evolves ComfyUI workflow topology.
+ClawAgent — LLM agent that evolves ComfyUI workflow topology.
 
-The agent uses Anthropic's tool-use API to call structured workflow
-operations in a loop until it calls ``finalize_workflow``.
+The agent uses LiteLLM's unified completion API (OpenAI-compatible tool-use
+format) to call structured workflow operations in a loop until it calls
+``finalize_workflow``.  Any provider supported by LiteLLM can be used —
+Anthropic, OpenAI, Google Gemini, local Ollama, etc.
 
 Tool categories
 ---------------
@@ -19,12 +21,13 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
-import anthropic
+import litellm
 
 from .skill_manager import SkillManager
 from .workflow import WorkflowManager
@@ -123,19 +126,28 @@ def _build_system_prompt(
 # Tool definitions
 # ---------------------------------------------------------------------------
 
+
+def _tool(name: str, description: str, parameters: dict) -> dict:
+    """Wrap a tool definition in OpenAI / LiteLLM function-calling format."""
+    return {
+        "type": "function",
+        "function": {"name": name, "description": description, "parameters": parameters},
+    }
+
+
 _TOOLS: list[dict] = [
-    {
-        "name": "inspect_workflow",
-        "description": "Return a human-readable summary of all nodes, IDs, class types, and key inputs.",
-        "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "query_available_models",
-        "description": (
+    _tool(
+        "inspect_workflow",
+        "Return a human-readable summary of all nodes, IDs, class types, and key inputs.",
+        {"type": "object", "properties": {}, "required": []},
+    ),
+    _tool(
+        "query_available_models",
+        (
             "Query the ComfyUI server for available models of a given type. "
             "Call this BEFORE adding LoRA or ControlNet nodes."
         ),
-        "input_schema": {
+        {
             "type": "object",
             "properties": {
                 "model_type": {
@@ -145,11 +157,11 @@ _TOOLS: list[dict] = [
             },
             "required": ["model_type"],
         },
-    },
-    {
-        "name": "set_param",
-        "description": "Set a scalar input on a specific node.",
-        "input_schema": {
+    ),
+    _tool(
+        "set_param",
+        "Set a scalar input on a specific node.",
+        {
             "type": "object",
             "properties": {
                 "node_id": {"type": "string"},
@@ -158,11 +170,11 @@ _TOOLS: list[dict] = [
             },
             "required": ["node_id", "param_name", "value"],
         },
-    },
-    {
-        "name": "add_node",
-        "description": "Append a new node to the workflow. Returns the new node ID.",
-        "input_schema": {
+    ),
+    _tool(
+        "add_node",
+        "Append a new node to the workflow. Returns the new node ID.",
+        {
             "type": "object",
             "properties": {
                 "class_type": {"type": "string"},
@@ -171,11 +183,11 @@ _TOOLS: list[dict] = [
             },
             "required": ["class_type"],
         },
-    },
-    {
-        "name": "connect_nodes",
-        "description": "Wire src_node output slot to dst_node input name.",
-        "input_schema": {
+    ),
+    _tool(
+        "connect_nodes",
+        "Wire src_node output slot to dst_node input name.",
+        {
             "type": "object",
             "properties": {
                 "src_node_id": {"type": "string"},
@@ -185,23 +197,23 @@ _TOOLS: list[dict] = [
             },
             "required": ["src_node_id", "src_output_index", "dst_node_id", "dst_input_name"],
         },
-    },
-    {
-        "name": "delete_node",
-        "description": "Remove a node and clean up its connections.",
-        "input_schema": {
+    ),
+    _tool(
+        "delete_node",
+        "Remove a node and clean up its connections.",
+        {
             "type": "object",
             "properties": {"node_id": {"type": "string"}},
             "required": ["node_id"],
         },
-    },
-    {
-        "name": "add_lora_loader",
-        "description": (
+    ),
+    _tool(
+        "add_lora_loader",
+        (
             "Insert a LoraLoader between the model/clip source and all downstream consumers. "
             "Call query_available_models('loras') first."
         ),
-        "input_schema": {
+        {
             "type": "object",
             "properties": {
                 "lora_name": {"type": "string"},
@@ -212,14 +224,14 @@ _TOOLS: list[dict] = [
             },
             "required": ["lora_name", "model_node_id", "clip_node_id"],
         },
-    },
-    {
-        "name": "add_controlnet",
-        "description": (
+    ),
+    _tool(
+        "add_controlnet",
+        (
             "Add ControlNetLoader + optional preprocessor + ControlNetApplyAdvanced. "
             "Call query_available_models('controlnets') first."
         ),
-        "input_schema": {
+        {
             "type": "object",
             "properties": {
                 "controlnet_name": {"type": "string"},
@@ -238,14 +250,14 @@ _TOOLS: list[dict] = [
                 "negative_node_id",
             ],
         },
-    },
-    {
-        "name": "add_regional_attention",
-        "description": (
+    ),
+    _tool(
+        "add_regional_attention",
+        (
             "Split conditioning into foreground and background regional prompts using "
             "BREAK tokens + ConditioningCombine."
         ),
-        "input_schema": {
+        {
             "type": "object",
             "properties": {
                 "positive_node_id": {"type": "string"},
@@ -261,11 +273,11 @@ _TOOLS: list[dict] = [
                 "background_prompt",
             ],
         },
-    },
-    {
-        "name": "add_hires_fix",
-        "description": "Add a hires-fix pass: LatentUpscaleBy + second KSampler + VAEDecode.",
-        "input_schema": {
+    ),
+    _tool(
+        "add_hires_fix",
+        "Add a hires-fix pass: LatentUpscaleBy + second KSampler + VAEDecode.",
+        {
             "type": "object",
             "properties": {
                 "upscale_method": {"type": "string"},
@@ -278,11 +290,11 @@ _TOOLS: list[dict] = [
             },
             "required": ["base_ksampler_node_id", "vae_node_id"],
         },
-    },
-    {
-        "name": "add_inpaint_pass",
-        "description": "Add a targeted inpaint pass for a specific region.",
-        "input_schema": {
+    ),
+    _tool(
+        "add_inpaint_pass",
+        "Add a targeted inpaint pass for a specific region.",
+        {
             "type": "object",
             "properties": {
                 "region_description": {"type": "string"},
@@ -303,11 +315,11 @@ _TOOLS: list[dict] = [
                 "vae_node_id",
             ],
         },
-    },
-    {
-        "name": "report_evolution_strategy",
-        "description": "Declare your evolution plan BEFORE making changes.",
-        "input_schema": {
+    ),
+    _tool(
+        "report_evolution_strategy",
+        "Declare your evolution plan BEFORE making changes.",
+        {
             "type": "object",
             "properties": {
                 "strategy": {"type": "string"},
@@ -315,26 +327,24 @@ _TOOLS: list[dict] = [
             },
             "required": ["strategy", "top_issue"],
         },
-    },
-    {
-        "name": "finalize_workflow",
-        "description": "Signal that all modifications are complete.",
-        "input_schema": {
+    ),
+    _tool(
+        "finalize_workflow",
+        "Signal that all modifications are complete.",
+        {
             "type": "object",
-            "properties": {
-                "rationale": {"type": "string"},
-            },
+            "properties": {"rationale": {"type": "string"}},
             "required": ["rationale"],
         },
-    },
-    {
-        "name": "read_skill",
-        "description": (
+    ),
+    _tool(
+        "read_skill",
+        (
             "Load the full instructions for a named skill (progressive disclosure). "
             "Call this BEFORE applying a skill's technique. "
             "Available skill names are listed in <available_skills> in the system prompt."
         ),
-        "input_schema": {
+        {
             "type": "object",
             "properties": {
                 "skill_name": {
@@ -344,7 +354,7 @@ _TOOLS: list[dict] = [
             },
             "required": ["skill_name"],
         },
-    },
+    ),
 ]
 
 
@@ -357,8 +367,14 @@ class ClawAgent:
     """
     Parameters
     ----------
-    api_key         : Anthropic API key.
-    model           : Claude model string.
+    api_key         : API key for the LLM provider.  For Anthropic this is the
+                      ``ANTHROPIC_API_KEY``; for OpenAI ``OPENAI_API_KEY``, etc.
+                      When provided it is written into the matching env-var so
+                      that LiteLLM can pick it up automatically.  You can also
+                      set the env-var directly and leave this empty.
+    model           : LiteLLM model string, e.g. ``"anthropic/claude-sonnet-4-5"``,
+                      ``"openai/gpt-4o"``, ``"gemini/gemini-2.0-flash"``,
+                      ``"ollama/llama3.1"``.
     server_address  : ComfyUI HTTP address (used for model queries).
     skills_dir      : Path to skills/ folder; ``None`` uses built-in skills.
     on_change       : Called with the workflow dict after every mutation.
@@ -367,18 +383,22 @@ class ClawAgent:
 
     def __init__(
         self,
-        api_key: str,
-        model: str = "claude-sonnet-4-5",
+        api_key: str = "",
+        model: str = "anthropic/claude-sonnet-4-5",
         server_address: str = "127.0.0.1:8188",
         skills_dir: str | None = None,
         on_change: Callable[[dict], None] | None = None,
         max_tool_rounds: int = 40,
         pinned_image_model: str | None = None,
     ) -> None:
-        self.client = anthropic.Anthropic(
-            api_key=api_key,
-            base_url="https://api.anthropic.com",
-        )
+        # Propagate the API key into the environment so LiteLLM picks it up.
+        # For Anthropic keys (sk-ant-…) we set ANTHROPIC_API_KEY; for other
+        # providers users should set the appropriate env-var themselves.
+        if api_key:
+            if api_key.startswith("sk-ant-"):
+                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
+            else:
+                os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
         self.model = model
         self.server_address = server_address
         self.skill_manager = SkillManager(skills_dir)
@@ -399,7 +419,10 @@ class ClawAgent:
         iteration: int = 1,
     ) -> str:
         """
-        Drive the Claude tool-use loop to evolve the workflow.
+        Drive the LLM tool-use loop to evolve the workflow.
+
+        Uses LiteLLM's OpenAI-compatible completion API so any provider
+        (Anthropic, OpenAI, Gemini, Ollama, …) can be used.
 
         Returns the rationale string from the ``finalize_workflow`` call.
         """
@@ -410,50 +433,64 @@ class ClawAgent:
             memory_summary=memory_summary,
             iteration=iteration,
         )
-        messages: list[dict] = [{"role": "user", "content": user_content}]
-        rationale = "(no rationale provided)"
-        rounds = 0
 
         system_prompt = _build_system_prompt(
             self.pinned_image_model,
             available_skills_xml=self.skill_manager.build_available_skills_xml(),
         )
 
+        # System prompt as the first message (OpenAI / LiteLLM convention).
+        messages: list[dict] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+        rationale = "(no rationale provided)"
+        rounds = 0
+
         while rounds < self.max_tool_rounds:
             rounds += 1
-            resp = self.client.messages.create(
+            resp = litellm.completion(
                 model=self.model,
                 max_tokens=4096,
-                system=system_prompt,
                 tools=_TOOLS,
                 messages=messages,
             )
-            messages.append({"role": "assistant", "content": resp.content})
+            choice = resp.choices[0]
+            finish_reason = choice.finish_reason
 
-            if resp.stop_reason == "end_turn":
+            # Append assistant turn (includes tool_calls when present).
+            assistant_msg = choice.message
+            messages.append(assistant_msg)
+
+            if finish_reason in ("stop", "end_turn"):
                 break
-            if resp.stop_reason != "tool_use":
-                print(f"[ClawAgent] Unexpected stop_reason: {resp.stop_reason!r}", file=sys.stderr)
+            if finish_reason != "tool_calls":
+                print(
+                    f"[ClawAgent] Unexpected finish_reason: {finish_reason!r}",
+                    file=sys.stderr,
+                )
                 break
 
-            tool_results = []
             done = False
-            for block in resp.content:
-                if block.type != "tool_use":
-                    continue
-                result_text, should_stop = self._dispatch(block.name, block.input, workflow_manager)
-                tool_results.append(
+            for tc in assistant_msg.tool_calls or []:
+                name = tc.function.name
+                # LiteLLM returns arguments as a JSON string; parse to dict.
+                try:
+                    inputs = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    inputs = {}
+                result_text, should_stop = self._dispatch(name, inputs, workflow_manager)
+                messages.append(
                     {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "role": "tool",
+                        "tool_call_id": tc.id,
                         "content": result_text,
                     }
                 )
                 if should_stop:
-                    rationale = block.input.get("rationale", rationale)
+                    rationale = inputs.get("rationale", rationale)
                     done = True
 
-            messages.append({"role": "user", "content": tool_results})
             if done:
                 break
 

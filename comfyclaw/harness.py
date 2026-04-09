@@ -76,9 +76,10 @@ class HarnessConfig:
                             iteration is abandoned.  Set to 0 to disable repairs.
     """
 
-    api_key: str
+    api_key: str = ""
     server_address: str = "127.0.0.1:8188"
-    model: str = "claude-sonnet-4-5"
+    model: str = "anthropic/claude-sonnet-4-5"
+    verifier_model: str | None = None
     max_iterations: int = 3
     success_threshold: float = 0.85
     sync_port: int = 8765
@@ -196,7 +197,7 @@ class ClawHarness:
         )
         self._verifier = ClawVerifier(
             api_key=config.api_key,
-            model=config.model,
+            model=config.verifier_model or config.model,
             score_weights=config.score_weights,
         )
 
@@ -585,12 +586,7 @@ class ClawHarness:
                 f"Prompt: {prompt}\nPassed: {', '.join(passed) or 'none'}\n"
                 f"Failed: {', '.join(failed) or 'none'}\nAgent rationale: {rationale}"
             )
-            resp = self._verifier.client.messages.create(
-                model=self._verifier.model,
-                max_tokens=200,
-                messages=[{"role": "user", "content": msg}],
-            )
-            return resp.content[0].text.strip()
+            return self._verifier.complete(msg, max_tokens=200)
         except Exception as exc:
             return f"Summary unavailable: {exc}"
 

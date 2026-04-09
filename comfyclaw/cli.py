@@ -19,10 +19,19 @@ node-path    Print the path to the bundled custom node directory.
 
 Environment variables
 ---------------------
-ANTHROPIC_API_KEY        Required for run / dry-run.
+Provider API keys (set the one matching your chosen --model provider):
+  ANTHROPIC_API_KEY    Anthropic Claude  (default provider)
+  OPENAI_API_KEY       OpenAI GPT-4o / o-series
+  GEMINI_API_KEY       Google Gemini
+  GROQ_API_KEY         Groq
+  (none needed)        Local Ollama
+
 COMFYUI_DIR              Path to ComfyUI installation (install-node).
 COMFYUI_ADDR             host:port of a running ComfyUI server.
-COMFYCLAW_MODEL          Claude model name.
+COMFYCLAW_MODEL          LiteLLM model string for the agent
+                         (default: anthropic/claude-sonnet-4-5).
+COMFYCLAW_VERIFIER_MODEL LiteLLM model for the vision verifier
+                         (default: same as COMFYCLAW_MODEL).
 COMFYCLAW_MAX_ITERATIONS Max agent–generate–verify cycles.
 COMFYCLAW_THRESHOLD      Stop early when verifier score ≥ this.
 COMFYCLAW_SCORE_WEIGHTS  Comma-separated "req_w,detail_w" (sum=1).
@@ -133,11 +142,15 @@ def _env_score_weights(default: tuple[float, float] = (0.6, 0.4)) -> tuple[float
 
 
 def _api_key() -> str:
-    return _require_env(
-        "ANTHROPIC_API_KEY",
-        hint="Export it before running:\n  export ANTHROPIC_API_KEY=sk-ant-...\n"
-        "Or add it to your .env file (see .env.example).",
-    )
+    """Return an API key from the environment.
+
+    LiteLLM reads provider keys from env-vars automatically (ANTHROPIC_API_KEY,
+    OPENAI_API_KEY, GEMINI_API_KEY, …).  We read ANTHROPIC_API_KEY here for
+    backward compatibility when the model is Anthropic.  If you use a different
+    provider, set that provider's env-var instead and leave ANTHROPIC_API_KEY
+    unset — in that case this returns an empty string, which is fine.
+    """
+    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
 def _comfyui_dir() -> Path:
@@ -257,10 +270,12 @@ def _cmd_run(args: argparse.Namespace, dry: bool = False) -> None:
         addr = _ensure_comfyui_running(addr)
 
     # CLI flags override env vars; env vars already loaded as defaults
+    verifier_model = args.verifier_model.strip() or None
     cfg = HarnessConfig(
         api_key=api_key,
         server_address=addr,
         model=args.model,
+        verifier_model=verifier_model,
         max_iterations=args.iterations,
         success_threshold=args.threshold,
         sync_port=0 if args.no_sync else args.sync_port,
@@ -271,15 +286,17 @@ def _cmd_run(args: argparse.Namespace, dry: bool = False) -> None:
         max_repair_attempts=args.max_repair_attempts,
     )
 
-    print(f"\n[cli] Workflow    : {args.workflow}")
-    print(f"[cli] Prompt      : {args.prompt!r}")
-    print(f"[cli] Model       : {cfg.model}")
-    print(f"[cli] Image model : {cfg.image_model or '(from workflow)'}")
-    print(f"[cli] Iterations  : {cfg.max_iterations}  Threshold: {cfg.success_threshold}")
-    print(f"[cli] Dry-run     : {dry}")
-    print(f"[cli] Sync port   : {cfg.sync_port or 'disabled'}")
-    print(f"[cli] Evolve mode : {'accumulate' if cfg.evolve_from_best else 'reset'}")
-    print(f"[cli] Repair limit: {cfg.max_repair_attempts} attempt(s) per iteration")
+    verifier_label = cfg.verifier_model or f"{cfg.model} (shared)"
+    print(f"\n[cli] Workflow       : {args.workflow}")
+    print(f"[cli] Prompt         : {args.prompt!r}")
+    print(f"[cli] Agent model    : {cfg.model}")
+    print(f"[cli] Verifier model : {verifier_label}")
+    print(f"[cli] Image model    : {cfg.image_model or '(from workflow)'}")
+    print(f"[cli] Iterations     : {cfg.max_iterations}  Threshold: {cfg.success_threshold}")
+    print(f"[cli] Dry-run        : {dry}")
+    print(f"[cli] Sync port      : {cfg.sync_port or 'disabled'}")
+    print(f"[cli] Evolve mode    : {'accumulate' if cfg.evolve_from_best else 'reset'}")
+    print(f"[cli] Repair limit   : {cfg.max_repair_attempts} attempt(s) per iteration")
 
     with ClawHarness.from_workflow_file(args.workflow, cfg) as h:
         result = h.run(prompt=args.prompt, dry_run=dry)
@@ -327,7 +344,24 @@ def _build_parser() -> argparse.ArgumentParser:
         )
         p.add_argument("--prompt", required=True, help="Image generation prompt")
         p.add_argument(
-            "--model", default=_env_str("COMFYCLAW_MODEL", "claude-sonnet-4-5"), metavar="NAME"
+            "--model",
+            default=_env_str("COMFYCLAW_MODEL", "anthropic/claude-sonnet-4-5"),
+            metavar="MODEL",
+            help=(
+                "LiteLLM model string for the agent, e.g. 'anthropic/claude-sonnet-4-5', "
+                "'openai/gpt-4o', 'gemini/gemini-2.0-flash', 'ollama/llama3.1'. "
+                "Set the matching provider API key env-var."
+            ),
+        )
+        p.add_argument(
+            "--verifier-model",
+            default=_env_str("COMFYCLAW_VERIFIER_MODEL", ""),
+            metavar="MODEL",
+            help=(
+                "LiteLLM model string for the vision verifier (must support images). "
+                "Defaults to the same value as --model. "
+                "Example: --model ollama/llama3.1 --verifier-model openai/gpt-4o"
+            ),
         )
         p.add_argument(
             "--iterations", type=int, default=_env_int("COMFYCLAW_MAX_ITERATIONS", 3), metavar="N"
