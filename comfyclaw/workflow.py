@@ -129,6 +129,94 @@ class WorkflowManager:
     # Model overrides
     # ------------------------------------------------------------------
 
+    # ── Prompt injection ──────────────────────────────────────────────────
+
+    #: Sampler node types that carry ``positive``/``negative`` links.
+    _SAMPLER_CLASSES: frozenset[str] = frozenset(
+        {
+            "KSampler",
+            "KSamplerAdvanced",
+            "SamplerCustom",
+            "SamplerCustomAdvanced",
+            "Hy3DSampler",
+            "WanVideoSampler",
+        }
+    )
+
+    #: Text-encoder node types that accept a ``text`` (or ``text_g``/``text_l``) input.
+    _TEXT_ENCODER_CLASSES: frozenset[str] = frozenset(
+        {
+            "CLIPTextEncode",
+            "CLIPTextEncodeSDXL",
+            "CLIPTextEncodeSD3",
+            "CLIPTextEncodeHunyuan",
+            "T5TextEncode",
+            "FLUXTextEncode",
+            "WanTextEncode",
+        }
+    )
+
+    def inject_prompt(
+        self,
+        positive: str | None = None,
+        negative: str | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """
+        Seed positive (and optionally negative) text into the workflow.
+
+        Walks every sampler node, follows its ``positive``/``negative`` link
+        to the connected text-encoder node, and sets the ``text`` input.
+        For SDXL-style encoders that expose ``text_g``/``text_l``, both are
+        updated.  The intent is to ensure the user's goal prompt is always
+        present before the agent further refines the workflow.
+
+        Parameters
+        ----------
+        positive :
+            The main generation prompt (what the image should depict).
+        negative :
+            Optional negative prompt (what to avoid).  ``None`` means skip.
+
+        Returns
+        -------
+        ``(pos_node_ids, neg_node_ids)`` — lists of encoder node IDs that
+        were actually updated.
+        """
+        pos_updated: list[str] = []
+        neg_updated: list[str] = []
+
+        for node in self.workflow.values():
+            if node.get("class_type", "") not in self._SAMPLER_CLASSES:
+                continue
+            inputs = node.get("inputs", {})
+            for slot, text_value, out_list in [
+                ("positive", positive, pos_updated),
+                ("negative", negative, neg_updated),
+            ]:
+                if text_value is None:
+                    continue
+                link = inputs.get(slot)
+                if not self._is_link(link):
+                    continue
+                encoder_id = str(link[0])
+                encoder = self.workflow.get(encoder_id)
+                if encoder is None:
+                    continue
+                if encoder.get("class_type", "") not in self._TEXT_ENCODER_CLASSES:
+                    continue
+                enc_inputs = encoder.setdefault("inputs", {})
+                if "text_g" in enc_inputs or "text_l" in enc_inputs:
+                    enc_inputs["text_g"] = text_value
+                    enc_inputs["text_l"] = text_value
+                else:
+                    enc_inputs["text"] = text_value
+                if encoder_id not in out_list:
+                    out_list.append(encoder_id)
+
+        return pos_updated, neg_updated
+
+    # ── Model override ────────────────────────────────────────────────────
+
     #: Ordered list of (class_type, input_param) pairs for every ComfyUI
     #: checkpoint / UNET loader node that holds a model filename.
     _LOADER_PARAMS: list[tuple[str, str]] = [
