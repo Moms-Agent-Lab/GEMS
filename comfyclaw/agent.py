@@ -38,23 +38,35 @@ from .workflow import WorkflowManager
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT_BASE = """\
-You are ComfyClaw, an expert ComfyUI workflow engineer.  Your job is to GROW
-the workflow topology — not just tweak parameters — in response to the
-verifier's region-level feedback.
+You are ComfyClaw, an expert ComfyUI workflow engineer.  Your job is to BUILD
+and GROW ComfyUI workflow topologies — constructing complete pipelines from
+scratch when the workflow is empty, and evolving existing ones in response to
+the verifier's region-level feedback.
 
 Iteration strategy
 ------------------
 1. Call report_evolution_strategy first: state your plan and the top issue.
 2. Call inspect_workflow to see the current topology.
-3. Call set_prompt — craft a detailed, professional positive prompt AND a strong
-   negative prompt based on the user's goal (see "Prompt engineering" below).
-   Do this EVERY iteration, even if you also plan structural changes.
-4. If a relevant skill is listed in <available_skills>, call read_skill to load
-   its full instructions BEFORE applying that upgrade.
-5. Call query_available_models BEFORE adding any LoRA or ControlNet node.
-6. Apply structural upgrades (LoRA / ControlNet / regional / hires / inpaint).
-7. Tune sampler parameters (steps, CFG, seed) as needed.
-8. Call finalize_workflow when done.
+3. **If the workflow is empty** (no nodes):
+   a. Call read_skill("workflow-builder") to load architecture recipes.
+   b. Call query_available_models("checkpoints") and query_available_models("diffusion_models")
+      to discover available models — NEVER guess filenames.
+   c. Match the model filename to an architecture (SD 1.5, SDXL, Flux, Qwen, etc.)
+      using the patterns in the workflow-builder skill.
+   d. Build the full pipeline node-by-node using add_node, following the matching recipe.
+   e. Use ONLY exact filenames from query results.
+   f. Set detailed prompts on the CLIPTextEncode nodes.
+   g. Call finalize_workflow.
+4. **If the workflow already has nodes**, follow the evolution strategy:
+   a. Call set_prompt — craft a detailed, professional positive prompt AND a strong
+      negative prompt based on the user's goal (see "Prompt engineering" below).
+      Do this EVERY iteration, even if you also plan structural changes.
+   b. If a relevant skill is listed in <available_skills>, call read_skill to load
+      its full instructions BEFORE applying that upgrade.
+   c. Call query_available_models BEFORE adding any LoRA or ControlNet node.
+   d. Apply structural upgrades (LoRA / ControlNet / regional / hires / inpaint).
+   e. Tune sampler parameters (steps, CFG, seed) as needed.
+   f. Call finalize_workflow when done.
 
 Prompt engineering (step 3)
 ----------------------------
@@ -92,6 +104,8 @@ load skills you actually intend to use — each read consumes context.
 
 Decision heuristics
 -------------------
+  Workflow is EMPTY (no nodes)          → read_skill("workflow-builder") FIRST.
+                                         Then query_available_models to pick arch.
   Workflow contains QwenImageModelLoader → read_skill("qwen-image-2512") FIRST.
                                          Qwen has NO KSampler/ControlNet/LoRA —
                                          all tuning is on RH_QwenImageGenerator.
@@ -1069,6 +1083,9 @@ class ClawAgent:
         # Hint at relevant skills (names only — full instructions loaded via read_skill)
         # Also suggest model-specific skills based on the active checkpoint name.
         relevant = self.skill_manager.detect_relevant_skills(original_prompt)
+        if workflow_manager and len(workflow_manager.workflow) == 0:
+            if "workflow-builder" not in relevant:
+                relevant.insert(0, "workflow-builder")
         if is_qwen:
             if "qwen-image-2512" not in relevant:
                 relevant.insert(0, "qwen-image-2512")
@@ -1097,6 +1114,21 @@ class ClawAgent:
             )
         if memory_summary:
             parts.append(f"## Memory / Past Attempts\n{memory_summary}")
+
+        if workflow_manager and len(workflow_manager.workflow) == 0:
+            parts.append(
+                "## CRITICAL — Empty Workflow — You MUST Build From Scratch\n"
+                "The workflow is COMPLETELY EMPTY. You CANNOT finalize without adding nodes.\n\n"
+                '**Step 1:** Call `read_skill("workflow-builder")` — it has complete node-by-node\n'
+                "recipes for every architecture (SD 1.5, SDXL, Flux, Qwen, SD3, HunyuanDiT).\n\n"
+                "**Step 2:** Call `query_available_models('checkpoints')` AND\n"
+                "`query_available_models('diffusion_models')` to discover available models.\n\n"
+                "**Step 3:** Match the model filename to an architecture using the patterns\n"
+                "in the workflow-builder skill, then follow that recipe exactly.\n\n"
+                "**Step 4:** Use ONLY exact filenames from query results — NEVER guess names.\n\n"
+                "**Step 5:** Add nodes ONE AT A TIME using `add_node`. Set detailed prompts.\n\n"
+                "**Step 6:** Call `finalize_workflow` only AFTER all nodes are added and connected."
+            )
 
         parts.append(
             "Begin with report_evolution_strategy, then inspect_workflow, "

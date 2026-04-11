@@ -287,7 +287,7 @@ def _cmd_run(args: argparse.Namespace, dry: bool = False) -> None:
     )
 
     verifier_label = cfg.verifier_model or f"{cfg.model} (shared)"
-    print(f"\n[cli] Workflow       : {args.workflow}")
+    print(f"\n[cli] Workflow       : {args.workflow or '(empty — agent builds from scratch)'}")
     print(f"[cli] Prompt         : {args.prompt!r}")
     print(f"[cli] Agent model    : {cfg.model}")
     print(f"[cli] Verifier model : {verifier_label}")
@@ -298,7 +298,11 @@ def _cmd_run(args: argparse.Namespace, dry: bool = False) -> None:
     print(f"[cli] Evolve mode    : {'accumulate' if cfg.evolve_from_best else 'reset'}")
     print(f"[cli] Repair limit   : {cfg.max_repair_attempts} attempt(s) per iteration")
 
-    with ClawHarness.from_workflow_file(args.workflow, cfg) as h:
+    if args.workflow:
+        ctx = ClawHarness.from_workflow_file(args.workflow, cfg)
+    else:
+        ctx = ClawHarness.from_workflow_dict({}, cfg)
+    with ctx as h:
         result = h.run(prompt=args.prompt, dry_run=dry)
 
     if result:
@@ -338,9 +342,9 @@ def _build_parser() -> argparse.ArgumentParser:
     def _add_run_args(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--workflow",
-            required=True,
+            default=None,
             metavar="PATH",
-            help="Path to API-format ComfyUI workflow JSON",
+            help="Path to API-format ComfyUI workflow JSON (omit to start from scratch)",
         )
         p.add_argument("--prompt", required=True, help="Image generation prompt")
         p.add_argument(

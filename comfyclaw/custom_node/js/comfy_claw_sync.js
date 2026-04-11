@@ -281,14 +281,14 @@ async function applyOp(op) {
 }
 
 /**
- * Process an array of diff ops sequentially with a delay between each
- * ``add_node`` op for a smooth visual build-up effect.
+ * Process an array of diff ops sequentially with a delay between each op
+ * for a smooth visual build-up effect.
  */
 async function applyDiffOps(ops) {
   const delayMs = getOpDelay();
   for (let i = 0; i < ops.length; i++) {
     await applyOp(ops[i]);
-    if (delayMs > 0 && ops[i].op === "add_node" && i < ops.length - 1) {
+    if (delayMs > 0 && i < ops.length - 1) {
       await sleep(delayMs);
     }
   }
@@ -351,6 +351,9 @@ class SyncClient {
       while (this._queue.length > 0) {
         const msg = this._queue.shift();
         await this._handleMessage(msg);
+        if (this._queue.length > 0 && msg.type === "workflow_diff") {
+          await sleep(getOpDelay());
+        }
       }
     } finally {
       this._processing = false;

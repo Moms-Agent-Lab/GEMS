@@ -122,10 +122,15 @@ class SyncServer:
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    def reset(self) -> None:
-        """Clear remembered workflow state (e.g. between harness runs)."""
+    def reset(self, *, empty: bool = False) -> None:
+        """Clear remembered workflow state.
+
+        Args:
+            empty: If True, set to ``{}`` so the next broadcast produces
+                   diffs (add_node ops) instead of a full snapshot.
+        """
         with self._wf_lock:
-            self._last_workflow = None
+            self._last_workflow = {} if empty else None
 
     # ------------------------------------------------------------------
     # Broadcast

@@ -280,14 +280,26 @@ class ClawHarness:
 
             wm = WorkflowManager(start_wf)
 
+            # Prepare sync: reset to empty so every subsequent broadcast
+            # produces add_node diffs (not a single full snapshot).
+            if self._sync:
+                self._sync.reset(empty=True)
+
+            # Broadcast base workflow nodes one-by-one so the ComfyUI
+            # canvas shows them appearing incrementally.
+            if self._sync and start_wf:
+                partial: dict = {}
+                for nid in sorted(start_wf.keys(), key=lambda k: int(k)):
+                    partial[nid] = copy.deepcopy(start_wf[nid])
+                    self._sync.broadcast(copy.deepcopy(partial))
+
             # Seed the user's prompt into every CLIPTextEncode-family node
-            # connected to a sampler's positive input.  This ensures the
-            # correct subject matter is always present regardless of what the
-            # base workflow has hard-coded, and gives the agent a meaningful
-            # starting point rather than a stale placeholder.
+            # connected to a sampler's positive input.
             pos_injected, _ = wm.inject_prompt(positive=prompt)
             if pos_injected:
                 print(f"[ClawHarness] 📝 Seeded user prompt into encoder node(s) {pos_injected}")
+                if self._sync:
+                    self._sync.broadcast(wm.to_dict())
 
             node_ids_before = set(wm.workflow.keys())
 
