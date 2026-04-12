@@ -216,7 +216,8 @@ cp -r "$(comfyclaw node-path)" ~/Documents/ComfyUI/custom_nodes/ComfyClaw-Sync
 
 ### Step 4 — Verify installation
 
-1. Start the server: `comfyclaw serve`
+1. Start the server: `comfyclaw serve` (add `--comfyui-addr host:port` if
+   ComfyUI is not on the default `127.0.0.1:8188`)
 2. Open ComfyUI in your browser. You should see:
 
 | UI element | Location | What to check |
@@ -244,6 +245,12 @@ everything from within ComfyUI's browser interface.
 comfyclaw serve
 ```
 
+If ComfyUI runs on a non-default port, pass `--comfyui-addr`:
+
+```bash
+comfyclaw serve --comfyui-addr 127.0.0.1:7130
+```
+
 You can configure the server with the same flags as `run`:
 
 ```bash
@@ -257,8 +264,8 @@ comfyclaw serve \
 show **🟢 live**. If it shows 🔴, the server isn't running or the port doesn't
 match (default: `ws://localhost:8765`).
 
-**Step 3: Use the 🐾 ComfyClaw panel** (top-right corner, click header to
-expand/collapse):
+**Step 3: Use the 🐾 ComfyClaw panel** (top-right corner; drag the header to
+reposition, click to collapse/expand):
 
 ```
 ┌─────────────────────────────────┐
@@ -314,6 +321,7 @@ expand/collapse):
 | 🔴 disconnected | Server not running | Run `comfyclaw serve` in a terminal |
 | 🔄 connecting (stuck) | Port mismatch | Check `--sync-port` matches (default 8765) |
 | 🔴 after server crash | Port still held | Wait a few seconds or `lsof -ti :8765 \| xargs kill` |
+| Stuck at "Waiting for ComfyUI" | Wrong ComfyUI address | Pass `--comfyui-addr host:port` (e.g. `--comfyui-addr 127.0.0.1:7130`) |
 | Panel not visible | Plugin not installed | Run `comfyclaw install-node` and restart ComfyUI |
 
 ### CLI run — one-shot from terminal
@@ -435,6 +443,7 @@ comfyclaw node-path     Print path to the bundled plugin directory
 
 | Flag | Default | Description |
 |---|---|---|
+| `--comfyui-addr HOST:PORT` | `127.0.0.1:8188` | ComfyUI server address (or set `COMFYUI_ADDR` env var) |
 | `--workflow PATH` | *(optional)* | API-format workflow JSON; omit to build from scratch |
 | `--prompt TEXT` | *(required for run/dry-run; ignored by serve)* | Image generation prompt; in serve mode the prompt comes from the ComfyUI panel |
 | `--model MODEL` | `anthropic/claude-sonnet-4-5` | LiteLLM model for the agent |
@@ -460,7 +469,7 @@ All flags have environment variable equivalents:
 | `OPENAI_API_KEY` | — | OpenAI provider auth |
 | `GEMINI_API_KEY` | — | Google Gemini provider auth |
 | `COMFYUI_DIR` | `~/Documents/ComfyUI` | `install-node` target |
-| `COMFYUI_ADDR` | `127.0.0.1:8188` | `--` (server address) |
+| `COMFYUI_ADDR` | `127.0.0.1:8188` | `--comfyui-addr` |
 | `COMFYCLAW_MODEL` | `anthropic/claude-sonnet-4-5` | `--model` |
 | `COMFYCLAW_VERIFIER_MODEL` | *(same as model)* | `--verifier-model` |
 | `COMFYCLAW_VERIFIER_MODE` | `vlm` | `--verifier-mode` |

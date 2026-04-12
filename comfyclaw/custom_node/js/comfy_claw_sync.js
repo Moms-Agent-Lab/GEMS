@@ -497,12 +497,11 @@ function createClawPanel() {
     fontSize:      "13px",
     lineHeight:    "1.5",
     overflow:      "hidden",
-    transition:    "transform 0.2s, opacity 0.2s",
   });
 
   panel.innerHTML = `
     <div id="comfyclaw-gen-header" style="padding:12px 16px; background:#313244;
-         cursor:pointer; display:flex; justify-content:space-between; align-items:center;
+         cursor:grab; display:flex; justify-content:space-between; align-items:center;
          user-select:none;">
       <span style="font-weight:700; font-size:14px;">🐾 ComfyClaw</span>
       <span id="comfyclaw-gen-toggle" style="font-size:11px; color:#a6adc8;">▼</span>
@@ -593,16 +592,67 @@ function createClawPanel() {
     });
   });
 
-  // Collapse/expand
+  // Drag + collapse/expand
   const header = panel.querySelector("#comfyclaw-gen-header");
   const body = panel.querySelector("#comfyclaw-gen-body");
   const toggle = panel.querySelector("#comfyclaw-gen-toggle");
   let collapsed = false;
-  header.addEventListener("click", () => {
-    collapsed = !collapsed;
-    body.style.display = collapsed ? "none" : "block";
-    toggle.textContent = collapsed ? "▶" : "▼";
+
+  let _dragState = null;
+  const DRAG_THRESHOLD = 5;
+
+  header.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const rect = panel.getBoundingClientRect();
+    _dragState = {
+      startX: e.clientX,
+      startY: e.clientY,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      dragging: false,
+    };
+    e.preventDefault();
   });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!_dragState) return;
+    const dx = e.clientX - _dragState.startX;
+    const dy = e.clientY - _dragState.startY;
+    if (!_dragState.dragging && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    _dragState.dragging = true;
+    header.style.cursor = "grabbing";
+    // Switch from right-anchored to left/top positioning
+    panel.style.right = "auto";
+    panel.style.left = Math.max(0, e.clientX - _dragState.offsetX) + "px";
+    panel.style.top = Math.max(0, e.clientY - _dragState.offsetY) + "px";
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (!_dragState) return;
+    const wasDrag = _dragState.dragging;
+    _dragState = null;
+    header.style.cursor = "grab";
+    if (wasDrag) {
+      // Persist position
+      localStorage.setItem("comfyclaw_panel_pos", JSON.stringify({
+        left: panel.style.left, top: panel.style.top,
+      }));
+    } else {
+      collapsed = !collapsed;
+      body.style.display = collapsed ? "none" : "block";
+      toggle.textContent = collapsed ? "▶" : "▼";
+    }
+  });
+
+  // Restore saved position
+  try {
+    const saved = JSON.parse(localStorage.getItem("comfyclaw_panel_pos"));
+    if (saved?.left && saved?.top) {
+      panel.style.right = "auto";
+      panel.style.left = saved.left;
+      panel.style.top = saved.top;
+    }
+  } catch (_) { /* ignore */ }
 
   // Generate button
   panel.querySelector("#comfyclaw-gen-btn").addEventListener("click", async () => {

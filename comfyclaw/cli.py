@@ -264,7 +264,7 @@ def _cmd_run(args: argparse.Namespace, dry: bool = False) -> None:
     from .harness import ClawHarness, HarnessConfig
 
     api_key = _api_key()
-    addr = _server_addr()
+    addr = args.comfyui_addr
 
     if not dry:
         addr = _ensure_comfyui_running(addr)
@@ -321,7 +321,7 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     from .sync_server import SyncServer
 
     api_key = _api_key()
-    addr = _ensure_comfyui_running(_server_addr())
+    addr = _ensure_comfyui_running(args.comfyui_addr)
 
     sync_port = 0 if args.no_sync else args.sync_port
     if not sync_port:
@@ -473,6 +473,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def _add_run_args(p: argparse.ArgumentParser, *, prompt_required: bool = True) -> None:
+        p.add_argument(
+            "--comfyui-addr",
+            default=_server_addr(),
+            metavar="HOST:PORT",
+            help=(
+                "ComfyUI server address, e.g. '127.0.0.1:7130'. "
+                "Default: COMFYUI_ADDR env var or 127.0.0.1:8188"
+            ),
+        )
         p.add_argument(
             "--workflow",
             default=None,
