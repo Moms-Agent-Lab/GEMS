@@ -753,12 +753,19 @@ class SyncClient {
   }
 
   async _handleMessage(msg) {
-    if (msg.type === "workflow_update" && msg.workflow) {
-      _currentApiWorkflow = JSON.parse(JSON.stringify(msg.workflow));
-      const nodeCount = Object.keys(msg.workflow).length;
-      const ok = await loadWorkflowIntoCanvas(msg.workflow);
-      if (ok) {
-        setStatus("updated", `${nodeCount} nodes`);
+    if (msg.type === "workflow_update") {
+      const wf = msg.workflow || {};
+      _currentApiWorkflow = JSON.parse(JSON.stringify(wf));
+      const nodeCount = Object.keys(wf).length;
+      if (nodeCount === 0) {
+        // "From scratch" — reset internal state; canvas stays untouched
+        // until the first new node arrives via workflow_diff.
+        console.log("[ComfyClaw] State reset (from-scratch); waiting for new nodes…");
+      } else {
+        const ok = await loadWorkflowIntoCanvas(wf);
+        if (ok) {
+          setStatus("updated", `${nodeCount} nodes`);
+        }
       }
     } else if (msg.type === "workflow_diff" && Array.isArray(msg.ops)) {
       const addCount = msg.ops.filter(o => o.op === "add_node").length;

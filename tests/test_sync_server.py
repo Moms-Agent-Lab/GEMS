@@ -147,6 +147,7 @@ class TestSyncServerBroadcast:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -168,6 +169,7 @@ class TestSyncServerBroadcast:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -203,6 +205,7 @@ class TestSyncServerBroadcast:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -219,6 +222,7 @@ class TestSyncServerBroadcast:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
 
         wf1 = {"1": {"class_type": "A", "inputs": {}}}
         wf2 = {
@@ -277,6 +281,7 @@ class TestSyncServerFeedback:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -299,6 +304,7 @@ class TestSyncServerFeedback:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         # No clients
 
         with patch("asyncio.run_coroutine_threadsafe") as mock_run:
@@ -352,6 +358,7 @@ class TestSyncServerTrigger:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -365,6 +372,7 @@ class TestSyncServerTrigger:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -378,6 +386,7 @@ class TestSyncServerTrigger:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
         mock_ws = MagicMock()
         srv._clients.add(mock_ws)
 
@@ -391,6 +400,7 @@ class TestSyncServerTrigger:
         srv._loop = MagicMock()
         srv._thread = MagicMock()
         srv._thread.is_alive.return_value = True
+        srv._started_ok = True
 
         with patch("asyncio.run_coroutine_threadsafe") as mock_run:
             srv.send_status("running")

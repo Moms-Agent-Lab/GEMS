@@ -351,8 +351,26 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     sync = SyncServer(port=sync_port)
     sync.start()
     if not sync.is_running():
-        sys.exit("[cli] Error: SyncServer failed to start. "
-                 f"Is port {sync_port} already in use?")
+        print(f"[cli] Port {sync_port} appears busy — attempting to reclaim…")
+        try:
+            result = subprocess.run(
+                ["lsof", "-ti", f":{sync_port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            pids = result.stdout.strip().split()
+            for pid in pids:
+                if pid.isdigit() and int(pid) != os.getpid():
+                    os.kill(int(pid), 9)
+                    print(f"[cli] Killed stale process {pid}")
+            if pids:
+                time.sleep(1)
+                sync = SyncServer(port=sync_port)
+                sync.start()
+        except Exception:
+            pass
+        if not sync.is_running():
+            sys.exit(f"[cli] Error: SyncServer failed to start on port {sync_port}. "
+                     f"Free the port manually: lsof -ti :{sync_port} | xargs kill")
 
     try:
         while True:
@@ -388,6 +406,10 @@ def _cmd_serve(args: argparse.Namespace) -> None:
                   f"Verifier: {verifier_mode}, Nodes: {node_count}")
 
             sync.send_status("running", iteration=0, detail="Initializing agent…")
+
+            if mode == "scratch":
+                sync.reset()
+                sync.broadcast({})
 
             try:
                 harness = ClawHarness.from_workflow_dict(workflow, cfg)
@@ -450,14 +472,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    def _add_run_args(p: argparse.ArgumentParser) -> None:
+    def _add_run_args(p: argparse.ArgumentParser, *, prompt_required: bool = True) -> None:
         p.add_argument(
             "--workflow",
             default=None,
             metavar="PATH",
             help="Path to API-format ComfyUI workflow JSON (omit to start from scratch)",
         )
-        p.add_argument("--prompt", required=True, help="Image generation prompt")
+        p.add_argument(
+            "--prompt",
+            required=prompt_required,
+            default=None,
+            help="Image generation prompt"
+            + ("" if prompt_required else " (optional — comes from ComfyUI panel)"),
+        )
         p.add_argument(
             "--model",
             default=_env_str("COMFYCLAW_MODEL", "anthropic/claude-sonnet-4-5"),
@@ -545,7 +573,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "serve",
         help="Start persistent server — listen for generation triggers from ComfyUI",
     )
-    _add_run_args(serve_p)
+    _add_run_args(serve_p, prompt_required=False)
     serve_p.set_defaults(func=_cmd_serve)
 
     inst_p = sub.add_parser("install-node", help="Symlink ComfyClaw-Sync custom node into ComfyUI")

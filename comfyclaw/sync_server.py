@@ -376,7 +376,12 @@ class SyncServer:
     async def _serve(self) -> None:
         self._stop_event = asyncio.Event()
         try:
-            async with websockets.server.serve(self._handler, self.host, self.port):
+            async with websockets.server.serve(
+                self._handler,
+                self.host,
+                self.port,
+                reuse_port=True,
+            ):
                 log.info("[SyncServer] Listening on ws://%s:%d", self.host, self.port)
                 print(f"[SyncServer] ✅ Listening on ws://{self.host}:{self.port}")
                 self._started_ok = True

@@ -7,35 +7,112 @@
 
 **Agentic harness for self-evolving ComfyUI image-generation workflows.**
 
-ComfyClaw wraps ComfyUI in an LLM agent loop that _grows_ the workflow
-topology in response to image quality feedback — adding LoRA loaders,
-ControlNet branches, regional conditioning, and hires-fix passes until a
-configurable quality threshold is reached.
+ComfyClaw wraps ComfyUI in an LLM agent loop that _builds and grows_ workflow
+topologies in response to image quality feedback — constructing pipelines from
+scratch or adding LoRA loaders, ControlNet branches, regional conditioning, and
+hires-fix passes until a configurable quality threshold is reached.
 
-Use **any LLM provider** supported by [LiteLLM](https://docs.litellm.ai/docs/providers):
-Anthropic Claude, OpenAI GPT-4o, Google Gemini, local Ollama models, and 100+
-more — including mixing providers (e.g. a fast local model for the agent,
-a vision-capable cloud model for the verifier).
+### Key features
+
+- **Generate from ComfyUI** — type a prompt, click Generate in the built-in
+  panel, and watch the agent work — no terminal interaction needed
+- **Build from scratch or evolve** — the agent can construct an entire ComfyUI
+  workflow from zero or iterate on an existing one
+- **Incremental visualization** — watch nodes appear one-by-one on the ComfyUI
+  canvas as the agent builds
+- **Human-in-the-loop** — choose VLM-only, human-only, or hybrid verification;
+  give subjective feedback directly from the ComfyUI panel
+- **Any LLM, any provider** — swap agent and verifier models independently via
+  [LiteLLM](https://docs.litellm.ai/docs/providers) (Anthropic, OpenAI, Gemini,
+  Ollama, 100+ more)
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         ClawHarness loop                            │
-│                                                                     │
-│  ┌──────────┐  evolve  ┌──────────────┐  submit  ┌──────────────┐  │
-│  │  Agent   │ ───────► │  ComfyUI API │ ───────► │  Image out   │  │
-│  │  Agent   │          │  (HTTP/WS)   │          └──────┬───────┘  │
-│  │  (LLM)   │          └──────────────┘                 │          │
-│  └────┬─────┘                                           │ verify   │
-│       │  feedback                                        │          │
-│       │ ◄────────────────────────────────────────────── ▼          │
-│       │                                          ┌──────────────┐  │
-│       │                                          │  Verifier    │  │
-│  ┌────┴─────┐  broadcast  ┌──────────────────┐  │  (LLM+vis)   │  │
-│  │  Memory  │             │ ComfyClaw-Sync    │  └──────────────┘  │
-│  │          │             │ (ComfyUI plugin)  │                    │
-│  └──────────┘             │ live graph update │                    │
-│                           └──────────────────┘                    │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           ClawHarness loop                              │
+│                                                                         │
+│  ┌──────────┐  evolve   ┌──────────────┐  submit  ┌──────────────┐     │
+│  │  Agent   │ ────────► │  ComfyUI API │ ───────► │  Image out   │     │
+│  │  (LLM)   │           │  (HTTP/WS)   │          └──────┬───────┘     │
+│  └────┬─────┘           └──────────────┘                 │             │
+│       │  feedback                                  verify│             │
+│       │ ◄─────────────────────────────────────────── ▼  │             │
+│       │                                       ┌──────────────┐         │
+│       │                                       │  Verifier    │         │
+│  ┌────┴─────┐                                 │ VLM / Human  │         │
+│  │  Memory  │  broadcast   ┌────────────────┐ │  / Hybrid    │         │
+│  │          │              │ ComfyClaw-Sync  │ └──────────────┘         │
+│  └──────────┘              │ (ComfyUI panel) │                         │
+│                            │ ● live graph    │ ◄─── trigger_generation │
+│                            │ ● node-by-node  │ ◄─── human_feedback     │
+│                            │ ● generate btn  │ ───► generation_status  │
+│                            └────────────────┘                         │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Usage guide](#usage-guide)
+  - [Serve mode — generate from ComfyUI (recommended)](#serve-mode--generate-from-comfyui-recommended)
+  - [CLI run — one-shot from terminal](#cli-run--one-shot-from-terminal)
+  - [Human-in-the-loop verification](#human-in-the-loop-verification)
+  - [Choosing an LLM provider](#choosing-an-llm-provider)
+- [CLI reference](#cli-reference)
+- [Python API](#python-api)
+- [Architecture](#architecture)
+- [Skills](#skills)
+- [Development](#development)
+- [Project structure](#project-structure)
+
+---
+
+## Quick start
+
+Four steps from zero to generating images inside ComfyUI:
+
+```bash
+# 1. Clone and install
+git clone https://github.com/davidliuk/comfyclaw.git
+cd comfyclaw
+uv sync                                    # or: pip install -e ".[sync]"
+
+# 2. Configure (set at least one LLM API key)
+cp .env.example .env                       # then edit .env
+# ANTHROPIC_API_KEY=sk-ant-...             # ← required
+# COMFYUI_ADDR=127.0.0.1:8188             # ← your ComfyUI address
+
+# 3. Install the ComfyUI plugin (one-time), then restart ComfyUI
+comfyclaw install-node
+
+# 4. Start the ComfyClaw server
+comfyclaw serve
+```
+
+Now open ComfyUI in your browser. You'll see:
+- Bottom-right: status badge shows **🟢 ComfyClaw: live**
+- Top-right: the **🐾 ComfyClaw panel** with a prompt box and Generate button
+
+Type a prompt, click **▶ Generate**, and watch the agent build a workflow
+node-by-node on the canvas, generate the image, and score it — all without
+leaving ComfyUI.
+
+> **How it works:** `comfyclaw serve` starts a persistent background server.
+> The ComfyUI plugin connects to it via WebSocket. When you click Generate,
+> the plugin sends your prompt to the server; the server runs an LLM agent
+> that builds/evolves a workflow, submits it to ComfyUI, verifies the output,
+> and iterates. You see every step live on the canvas.
+>
+> **If the badge shows 🔴 disconnected:** make sure `comfyclaw serve` is
+> running in a terminal. The plugin is just a frontend — it needs the Python
+> server to be active.
+
+For one-shot CLI usage (without the ComfyUI panel):
+
+```bash
+comfyclaw run --prompt "a red fox at dawn, photorealistic, DSLR"
 ```
 
 ---
@@ -44,44 +121,29 @@ a vision-capable cloud model for the verifier).
 
 ### Prerequisites
 
-- Python 3.10+
-- [ComfyUI](https://github.com/comfyanonymous/ComfyUI) (Desktop or server)
-- An API key for your chosen LLM provider (see [Supported providers](#supported-llm-providers))
+| Requirement | Notes |
+|---|---|
+| **Python 3.10+** | 3.12+ recommended |
+| **[ComfyUI](https://github.com/comfyanonymous/ComfyUI)** | Desktop app or server, running and accessible via HTTP |
+| **LLM API key** | For your chosen provider (see [Choosing an LLM provider](#choosing-an-llm-provider)) |
 
-### 1. Install uv (recommended)
+### Step 1 — Install ComfyClaw
 
-[uv](https://docs.astral.sh/uv/) is the fastest way to manage Python
-environments and installs.
-
-```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# or Homebrew
-brew install uv
-```
-
-### 2. Install ComfyClaw
+**With [uv](https://docs.astral.sh/uv/) (recommended):**
 
 ```bash
-# Clone the repo and install in editable mode (for development)
 git clone https://github.com/davidliuk/comfyclaw.git
 cd comfyclaw
-uv sync --group dev          # installs all dev + runtime deps
-
-# Or install just the runtime (no dev tools)
-uv sync
-
-# Or install from PyPI (once published)
-uv add comfyclaw             # adds to your project
-uv tool install comfyclaw    # installs comfyclaw CLI globally
+uv sync                      # runtime dependencies
+uv sync --group dev          # + dev tools (pytest, ruff, mypy, …)
 ```
 
-**Pip alternative** (without uv):
+**With pip:**
 
 ```bash
-pip install -e ".[sync]"          # from a local clone
-pip install "comfyclaw[sync]"     # from PyPI
+git clone https://github.com/davidliuk/comfyclaw.git
+cd comfyclaw
+pip install -e ".[sync]"    # editable install with WebSocket support
 ```
 
 **Dependency extras:**
@@ -93,257 +155,376 @@ pip install "comfyclaw[sync]"     # from PyPI
 | `providers` | `anthropic>=0.25` | Direct Anthropic SDK (optional; litellm handles it) |
 | `dev` (group) | `pytest`, `ruff`, `mypy`, … | Development & CI |
 
-### 3. Configure environment
+### Step 2 — Configure environment
 
 ```bash
 cp .env.example .env
-# Open .env and set at minimum:
-#   ANTHROPIC_API_KEY=sk-ant-...   (for Anthropic — default provider)
-#   OPENAI_API_KEY=sk-...           (for OpenAI)
-#   GEMINI_API_KEY=...              (for Google Gemini)
-#   (no key needed for local Ollama)
-#   COMFYUI_ADDR=127.0.0.1:8188
 ```
 
-All CLI flags can also be set as environment variables (see [Environment
-variables](#environment-variables)).  `.env` is auto-loaded at startup.
+Edit `.env` with your settings:
 
-### 2. Install the ComfyUI live-sync plugin
+```ini
+# Required: at least one LLM provider key
+ANTHROPIC_API_KEY=sk-ant-...        # for Anthropic (default provider)
+# OPENAI_API_KEY=sk-...             # for OpenAI
+# GEMINI_API_KEY=...                # for Google Gemini
+# (no key needed for local Ollama)
 
-The plugin is bundled inside the package.  Install it once, then restart ComfyUI.
+# Required: ComfyUI server address
+COMFYUI_ADDR=127.0.0.1:8188        # adjust to your ComfyUI port
+
+# Optional: ComfyUI install path (for plugin installation)
+COMFYUI_DIR=~/Documents/ComfyUI
+
+# Optional: model and behavior overrides
+# COMFYCLAW_MODEL=anthropic/claude-sonnet-4-5
+# COMFYCLAW_VERIFIER_MODEL=openai/gpt-4o
+# COMFYCLAW_VERIFIER_MODE=vlm
+# COMFYCLAW_MAX_ITERATIONS=3
+# COMFYCLAW_THRESHOLD=0.85
+# COMFYCLAW_SYNC_PORT=8765
+```
+
+All CLI flags can also be set as environment variables. `.env` is auto-loaded
+at startup.
+
+### Step 3 — Install the ComfyUI plugin
+
+The plugin is bundled inside the package. Install it once, then **restart
+ComfyUI** so it loads the new extension.
 
 ```bash
 # Automatic (recommended)
 comfyclaw install-node
 
 # With an explicit ComfyUI path
-uv run comfyclaw install-node --comfyui-dir /fs/nexus-scratch/zli12321/comfy-testing/ComfyUI
-
-# Via environment variable
-export COMFYUI_DIR=~/Documents/ComfyUI
-comfyclaw install-node
-
-# Find the node source path (for manual copy)
-comfyclaw node-path
+comfyclaw install-node --comfyui-dir ~/Documents/ComfyUI
 ```
 
-Manual alternative:
+<details>
+<summary>Manual alternatives</summary>
 
 ```bash
-# Symlink (any edits to the package take effect immediately)
+# Symlink (edits take effect immediately — best for development)
 ln -s "$(comfyclaw node-path)" ~/Documents/ComfyUI/custom_nodes/ComfyClaw-Sync
 
 # Or copy
 cp -r "$(comfyclaw node-path)" ~/Documents/ComfyUI/custom_nodes/ComfyClaw-Sync
 ```
 
-After installation a status badge appears in the bottom-right corner of the
-ComfyUI canvas:
-- 🔄 connecting — waiting for the Python sync server
-- 🟢 live — connected, ready to receive updates
-- ✨ graph updated — agent just pushed a new workflow
-- 🔴 disconnected — sync server not running (click to reconfigure URL)
+</details>
 
----
+### Step 4 — Verify installation
 
-## Environment variables
+1. Start the server: `comfyclaw serve`
+2. Open ComfyUI in your browser. You should see:
 
-| Variable | Default | Description |
+| UI element | Location | What to check |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | API key for Anthropic models (`anthropic/…`) |
-| `OPENAI_API_KEY` | — | API key for OpenAI models (`openai/…`) |
-| `GEMINI_API_KEY` | — | API key for Google Gemini models (`gemini/…`) |
-| `GROQ_API_KEY` | — | API key for Groq models (`groq/…`) |
-| `COMFYUI_DIR` | `~/Documents/ComfyUI` | Path to your ComfyUI installation |
-| `COMFYUI_ADDR` | `127.0.0.1:8188` | `host:port` of a running ComfyUI server |
-| `COMFYCLAW_MODEL` | `anthropic/claude-sonnet-4-5` | LiteLLM model string for the agent |
-| `COMFYCLAW_VERIFIER_MODEL` | *(same as model)* | LiteLLM model for the vision verifier |
+| **Status badge** | Bottom-right corner | Shows **🟢 ComfyClaw: live** (not 🔴 or 🔄) |
+| **🐾 ComfyClaw panel** | Top-right corner | Prompt box, mode toggle, Generate button visible |
+
+3. Type a test prompt (e.g. "a cute cat") in the panel and click **▶ Generate**.
+
+If the badge stays at **🔴 disconnected**, verify that `comfyclaw serve` is running
+and the port matches (default 8765). See [Troubleshooting connection](#serve-mode--generate-from-comfyui-recommended) for details.
 
 ---
 
-## Supported LLM providers
+## Usage guide
 
-ComfyClaw uses [LiteLLM](https://docs.litellm.ai/docs/providers) to route to any
-provider.  Set the matching environment variable and pass the model string with
-the provider prefix:
+### Serve mode — generate from ComfyUI (recommended)
 
-| Provider | Model string format | Required env var |
+This is the primary way to use ComfyClaw. You start the server once, then do
+everything from within ComfyUI's browser interface.
+
+**Step 1: Start the server** (leave it running in a terminal):
+
+```bash
+comfyclaw serve
+```
+
+You can configure the server with the same flags as `run`:
+
+```bash
+comfyclaw serve \
+  --model openai/gpt-4o \
+  --iterations 5 \
+  --threshold 0.9
+```
+
+**Step 2: Open ComfyUI** in your browser. The status badge (bottom-right) should
+show **🟢 live**. If it shows 🔴, the server isn't running or the port doesn't
+match (default: `ws://localhost:8765`).
+
+**Step 3: Use the 🐾 ComfyClaw panel** (top-right corner, click header to
+expand/collapse):
+
+```
+┌─────────────────────────────────┐
+│ 🐾 ComfyClaw                  ▼│
+├─────────────────────────────────┤
+│                                 │
+│ Prompt                          │
+│ ┌─────────────────────────────┐ │
+│ │ a cute cat sitting on a     │ │
+│ │ windowsill at sunset...     │ │
+│ └─────────────────────────────┘ │
+│                                 │
+│ Mode                            │
+│ [✨ From Scratch] [🔧 Improve]  │
+│                                 │
+│ ▸ Settings                      │
+│   Iterations: [3]               │
+│   Verifier:   [VLM ▾]          │
+│                                 │
+│ [        ▶ Generate          ]  │
+│                                 │
+│ ┌─────────────────────────────┐ │
+│ │ ✅ Done! Score: 0.89 (1 it)│ │
+│ └─────────────────────────────┘ │
+└─────────────────────────────────┘
+```
+
+| Element | What it does |
+|---|---|
+| **Prompt** | Multi-line text — describe what you want to generate |
+| **✨ From Scratch** | Agent builds the entire workflow from zero |
+| **🔧 Improve Current** | Agent evolves whatever is currently on the canvas |
+| **Settings** | Override iterations count and verifier mode (VLM / Human / Hybrid) per-run |
+| **▶ Generate** | Send prompt to agent — workflow builds live on canvas |
+| **Status area** | Real-time progress: idle → running → verifying → complete |
+| **■ Stop** | Cancel the current run (appears while running) |
+
+**What happens when you click Generate:**
+
+1. Panel sends your prompt + mode + settings to the server via WebSocket
+2. Server creates a fresh LLM agent
+3. Agent queries ComfyUI for available models, reads skill recipes
+4. Nodes appear one-by-one on the canvas (highlighted in blue)
+5. Workflow is submitted to ComfyUI → image generated
+6. Vision LLM (or you, in human mode) scores the image
+7. If below threshold, agent iterates with feedback
+8. Status area shows final score; server waits for next trigger
+
+**Troubleshooting connection:**
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| 🔴 disconnected | Server not running | Run `comfyclaw serve` in a terminal |
+| 🔄 connecting (stuck) | Port mismatch | Check `--sync-port` matches (default 8765) |
+| 🔴 after server crash | Port still held | Wait a few seconds or `lsof -ti :8765 \| xargs kill` |
+| Panel not visible | Plugin not installed | Run `comfyclaw install-node` and restart ComfyUI |
+
+### CLI run — one-shot from terminal
+
+For scripting or batch jobs, you can run a single generation from the CLI
+without using the ComfyUI panel:
+
+```bash
+# Build from scratch (no workflow file needed)
+comfyclaw run \
+  --prompt "a red fox at dawn, photorealistic, DSLR" \
+  --iterations 3
+
+# Or evolve an existing workflow
+comfyclaw run \
+  --workflow my_workflow_api.json \
+  --prompt "a red fox at dawn, photorealistic, DSLR" \
+  --iterations 3
+
+# Dry-run (agent builds workflow, no ComfyUI execution — good for testing)
+comfyclaw dry-run --prompt "a cute cat"
+```
+
+The agent loop is identical to serve mode. The only difference is that the
+prompt and settings come from CLI flags instead of the ComfyUI panel, and
+the process exits after one run.
+
+### Human-in-the-loop verification
+
+By default, a vision LLM scores each generated image. You can add human
+judgement — either replacing the LLM entirely or reviewing its assessment.
+
+| Mode | Flag | Behavior |
+|---|---|---|
+| **VLM** (default) | `--verifier-mode vlm` | Vision LLM scores automatically |
+| **Human** | `--verifier-mode human` | You score via ComfyUI panel (terminal fallback if no panel) |
+| **Hybrid** | `--verifier-mode hybrid` | VLM scores first → you review and accept or override |
+
+```bash
+# Human-only verification
+comfyclaw run \
+  --prompt "portrait of a girl in golden hour light" \
+  --verifier-mode human \
+  --iterations 3
+
+# Hybrid: VLM proposes, you approve or correct
+comfyclaw run \
+  --prompt "portrait of a girl in golden hour light" \
+  --verifier-mode hybrid
+
+# In serve mode: selectable per-run from the panel's Settings dropdown
+comfyclaw serve --iterations 3
+```
+
+When feedback is requested, a **floating panel** appears in ComfyUI:
+
+- Prompt and iteration number displayed at top
+- VLM assessment summary (hybrid mode only)
+- **Score buttons**: 👍 Good (0.9) · 👌 OK (0.6) · 👎 Needs Work (0.3)
+- **Text area** for specific feedback ("make the lighting warmer", "fix the hands")
+- **Submit** sends feedback → agent adapts next iteration
+- **Accept as-is** approves the current result
+
+The agent treats human feedback as high-priority subjective input and focuses
+its next iteration on the specific issues you raised.
+
+### Choosing an LLM provider
+
+ComfyClaw uses [LiteLLM](https://docs.litellm.ai/docs/providers) to route to
+any provider. Set the matching environment variable and use the model string
+with provider prefix:
+
+| Provider | Model string | Required env var |
 |---|---|---|
 | **Anthropic** (default) | `anthropic/claude-sonnet-4-5` | `ANTHROPIC_API_KEY` |
 | **OpenAI** | `openai/gpt-4o` | `OPENAI_API_KEY` |
 | **Google Gemini** | `gemini/gemini-2.0-flash` | `GEMINI_API_KEY` |
 | **Groq** | `groq/llama-3.3-70b-versatile` | `GROQ_API_KEY` |
-| **Azure OpenAI** | `azure/<deployment-name>` | `AZURE_API_KEY` + `AZURE_API_BASE` |
-| **Local Ollama** | `ollama/llama3.1` | *(none — no API key needed)* |
-| **Local vLLM** | `openai/my-model` + `--base-url` | *(none)* |
+| **Azure OpenAI** | `azure/<deployment>` | `AZURE_API_KEY` + `AZURE_API_BASE` |
+| **Local Ollama** | `ollama/llama3.1` | *(none)* |
+
+You can **mix providers** — use a cheap/fast model for the agent and a strong
+vision model for the verifier:
 
 ```bash
-# Anthropic (default)
-export ANTHROPIC_API_KEY=sk-ant-...
-comfyclaw run --model anthropic/claude-sonnet-4-5 --workflow w.json --prompt "..."
+# Cloud agent + cloud verifier (highest quality)
+comfyclaw run --model anthropic/claude-sonnet-4-5 --prompt "..."
 
-# OpenAI
-export OPENAI_API_KEY=sk-...
-comfyclaw run --model openai/gpt-4o --workflow w.json --prompt "..."
+# Local agent + cloud verifier (saves agent API costs)
+comfyclaw run \
+  --model ollama/llama3.1 \
+  --verifier-model anthropic/claude-sonnet-4-5 \
+  --prompt "..."
 
-# Google Gemini
-export GEMINI_API_KEY=...
-comfyclaw run --model gemini/gemini-2.0-flash --workflow w.json --prompt "..."
-
-# Fully local — Ollama agent, LLaVA verifier (no API key required)
-comfyclaw run --model ollama/llama3.1 --verifier-model ollama/llava \
-  --workflow w.json --prompt "..."
-
-# Mix providers: cheap local agent + strong cloud verifier
-export ANTHROPIC_API_KEY=sk-ant-...
-comfyclaw run --model ollama/llama3.1 \
-             --verifier-model anthropic/claude-sonnet-4-5 \
-             --workflow w.json --prompt "..."
+# Fully local (no API keys needed, requires capable local models)
+comfyclaw run \
+  --model ollama/llama3.1 \
+  --verifier-model ollama/llava \
+  --prompt "..."
 ```
 
 > **Vision requirement**: the `--verifier-model` must support image inputs.
-> Good choices: `anthropic/claude-*`, `openai/gpt-4o`, `gemini/gemini-*`, `ollama/llava`.
-
----
-
-## Quick start
-
-```bash
-# 1. Set your provider API key (or put it in .env)
-export ANTHROPIC_API_KEY=sk-ant-...    # Anthropic (default)
-# export OPENAI_API_KEY=sk-...           # OpenAI alternative
-# export GEMINI_API_KEY=...              # Gemini alternative
-# (no key needed for local Ollama)
-
-# 2. Install the ComfyUI live-sync plugin (one-time)
-uv run comfyclaw install-node
-
-# 3. Run — full agent–generate–verify loop
-uv run comfyclaw run \
-  --workflow my_workflow_api.json \
-  --prompt "a red fox at dawn, photorealistic, DSLR"
-
-# 4. Dry-run — agent patches workflow, skips ComfyUI (no GPU needed)
-uv run comfyclaw dry-run \
-  --workflow my_workflow_api.json \
-  --prompt "a red fox at dawn"
-```
-
-If you installed via `uv tool install comfyclaw` or activated the venv, drop
-the `uv run` prefix.
-
-Or via `python3 run_comfy_claw.py` at the repo root (no install needed):
-
-```bash
-python3 run_comfy_claw.py --prompt "a red fox at dawn" --iterations 3
-python3 run_comfy_claw.py --dry-run
-```
-
----
-
-## Sample runs
-
-These two runs use the same `qwen_workflow_api.json` base workflow and Qwen-Image-2512
-to illustrate how agent quality affects the outcome.
-
----
-
-### Case 1 — Claude Sonnet 4.5 · Wildlife photography
-
-```bash
-uv run comfyclaw run \
-  --workflow qwen_workflow_api.json \
-  --prompt "A majestic red fox sitting in a misty ancient forest at dawn, photorealistic wildlife photography" \
-  --iterations 2
-```
-
-**What the agent did (iteration 1):**
-
-1. Called `read_skill("qwen-image-2512")` → learned model-specific parameters
-2. Called `read_skill("photorealistic")` and `read_skill("high-quality")`
-3. Called `set_prompt` with an expanded prompt:
-   - Rich spatial composition (fox on mossy log, ferns foreground, old-growth trees behind)
-   - Lighting details: golden volumetric dawn light, rim lighting, atmospheric mist
-   - Technical photography style: 300 mm f/2.8, shallow DoF, National Geographic aesthetic
-   - Chinese-language negative prompt (Qwen understands both languages)
-4. Set resolution to **1472 × 1104** (Qwen's 4:3 Lightning bucket)
-5. Confirmed optimal Lightning settings: `steps=4, cfg=1.0, euler/simple`
-
-**Result:**
-
-| Metric | Value |
-|--------|-------|
-| Score | **0.89 / 1.00** |
-| Threshold | 0.85 |
-| Outcome | ✅ Passed — **stopped early after iteration 1** |
-| Passed checks | Fox present, red colour, sitting pose, forest, ancient trees, mist, dawn lighting, photorealistic, majestic posture |
-| Failed checks | "Wildlife photography style" (minor stylistic gap) |
-
-**Verifier summary:** *"The image is a high-quality, photorealistic rendering of a red fox in a forest environment with excellent lighting, composition, and atmospheric effects."*
-
----
-
-### Case 2 — Ollama Gemma4 (e4b) · Cyberpunk city
-
-```bash
-uv run comfyclaw run \
-  --workflow qwen_workflow_api.json \
-  --model ollama/gemma4:e4b \
-  --verifier-model ollama/gemma4:e4b \
-  --image-model "qwen_image_2512_fp8_e4m3fn.safetensors" \
-  --iterations 3 \
-  --prompt "a futuristic cyberpunk city skyline at night, neon lights, rain, 8k"
-```
-
-**What the agent did:**
-
-Gemma4 correctly *planned* multi-step evolutions (ControlNet Canny, hires-fix, prompt
-overhaul) but did not reliably execute the corresponding tool calls — `nodes 11→11 (+0)`
-in all three iterations. The harness still seeded the correct user prompt before each
-iteration via `inject_prompt`, so images were generated with the right subject.
-
-**Result:**
-
-| Iteration | Score | Key verifier notes |
-|-----------|-------|--------------------|
-| 1 | 0.36 | Cyberpunk atmosphere present; missing neon signs, wet reflections, night lighting |
-| 2 | 0.36 | Same structural gap; agent planned ControlNet but did not execute |
-| 3 | **0.49** | Rain and reflections now passed; architecture/neon still weak |
-
-**Verifier summary (iter 3):** *"Highly atmospheric piece, perfectly capturing the
-cyberpunk aesthetic. Lighting, scale, and neon saturation are excellent."*
-
-**Takeaway:** Gemma4 is a capable *vision verifier* but its tool-call execution is
-less reliable than Claude for complex multi-step workflow modifications.  Use a larger
-or more capable model for the agent role when precise tool use is required, and
-reserve Gemma4 (or another local model) for the `--verifier-model` slot.
+> Good choices: `anthropic/claude-*`, `openai/gpt-4o`, `gemini/gemini-*`,
+> `ollama/llava`.
 
 ---
 
 ## CLI reference
 
 ```
-comfyclaw run           Run the full agent–generate–verify loop
-comfyclaw dry-run       Run the agent only (no ComfyUI execution needed)
+comfyclaw serve         Persistent server — trigger from ComfyUI panel (recommended)
+comfyclaw run           One-shot agent → generate → verify loop from terminal
+comfyclaw dry-run       Agent-only (no ComfyUI execution — useful for testing)
 comfyclaw install-node  Symlink the ComfyClaw-Sync plugin into ComfyUI
-comfyclaw node-path     Print the path to the bundled plugin directory
+comfyclaw node-path     Print path to the bundled plugin directory
 ```
 
-### `comfyclaw run` / `comfyclaw dry-run` options
+### Options for `run` / `dry-run` / `serve`
 
 | Flag | Default | Description |
 |---|---|---|
-| `--workflow PATH` | *(required)* | API-format ComfyUI workflow JSON |
-| `--prompt TEXT` | *(required)* | Image generation prompt |
-| `--model MODEL` | `anthropic/claude-sonnet-4-5` | LiteLLM model for the agent (e.g. `openai/gpt-4o`, `gemini/gemini-2.0-flash`, `ollama/llama3.1`) |
-| `--verifier-model MODEL` | *(same as --model)* | LiteLLM model for the vision verifier (must support images) |
-| `--iterations N` | `3` | Maximum agent–generate–verify cycles |
-| `--threshold SCORE` | `0.85` | Stop early when verifier score ≥ this value |
-| `--sync-port PORT` | `8765` | WebSocket port for live graph sync |
-| `--no-sync` | off | Disable live sync (faster; ComfyUI not needed) |
-| `--skills-dir DIR` | *(built-in)* | Custom directory of skill SKILL.md files |
+| `--workflow PATH` | *(optional)* | API-format workflow JSON; omit to build from scratch |
+| `--prompt TEXT` | *(required for run/dry-run; ignored by serve)* | Image generation prompt; in serve mode the prompt comes from the ComfyUI panel |
+| `--model MODEL` | `anthropic/claude-sonnet-4-5` | LiteLLM model for the agent |
+| `--verifier-model MODEL` | *(same as --model)* | LiteLLM model for the vision verifier |
+| `--verifier-mode MODE` | `vlm` | `vlm`, `human`, or `hybrid` |
+| `--image-model NAME` | *(from workflow)* | Pin ComfyUI checkpoint filename |
+| `--iterations N` | `3` | Max agent–generate–verify cycles |
+| `--threshold SCORE` | `0.85` | Stop early when score ≥ threshold |
+| `--max-repair-attempts N` | `2` | Auto-repair attempts per iteration |
+| `--sync-port PORT` | `8765` | WebSocket port for live sync |
+| `--no-sync` | off | Disable live sync |
+| `--skills-dir DIR` | *(built-in)* | Custom skill directory |
 | `--reset-each-iter` | off | Reset to base workflow each iteration |
 | `--output-dir DIR` | `./comfyclaw_output/` | Where to save the best image |
+
+### Environment variables
+
+All flags have environment variable equivalents:
+
+| Variable | Default | Maps to |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Anthropic provider auth |
+| `OPENAI_API_KEY` | — | OpenAI provider auth |
+| `GEMINI_API_KEY` | — | Google Gemini provider auth |
+| `COMFYUI_DIR` | `~/Documents/ComfyUI` | `install-node` target |
+| `COMFYUI_ADDR` | `127.0.0.1:8188` | `--` (server address) |
+| `COMFYCLAW_MODEL` | `anthropic/claude-sonnet-4-5` | `--model` |
+| `COMFYCLAW_VERIFIER_MODEL` | *(same as model)* | `--verifier-model` |
+| `COMFYCLAW_VERIFIER_MODE` | `vlm` | `--verifier-mode` |
+| `COMFYCLAW_MAX_ITERATIONS` | `3` | `--iterations` |
+| `COMFYCLAW_THRESHOLD` | `0.85` | `--threshold` |
+| `COMFYCLAW_SYNC_PORT` | `8765` | `--sync-port` |
+
+---
+
+## Sample runs
+
+### Claude Sonnet 4.5 — Wildlife photography (serve mode)
+
+Start the server once and generate from ComfyUI:
+
+```bash
+comfyclaw serve --iterations 2
+```
+
+In the ComfyUI panel, enter the prompt:
+> A majestic red fox sitting in a misty ancient forest at dawn, photorealistic wildlife photography
+
+Select **✨ From Scratch** and click **▶ Generate**.
+
+Equivalent one-shot CLI command:
+
+```bash
+comfyclaw run \
+  --workflow qwen_workflow_api.json \
+  --prompt "A majestic red fox sitting in a misty ancient forest at dawn, photorealistic wildlife photography" \
+  --iterations 2
+```
+
+The agent read `qwen-image-2512` + `photorealistic` skills, expanded the
+prompt with camera specs (300 mm f/2.8, shallow DoF, National Geographic
+aesthetic), added a Chinese negative prompt, and set resolution to 1472×1104
+for Qwen's optimal Lightning bucket.
+
+| Metric | Value |
+|--------|-------|
+| Score | **0.89 / 1.00** |
+| Outcome | ✅ Stopped early after iteration 1 |
+| Passed | Fox, red colour, sitting pose, forest, mist, dawn lighting, photorealistic |
+
+### Ollama Gemma4 — Cyberpunk city
+
+```bash
+comfyclaw run \
+  --workflow qwen_workflow_api.json \
+  --model ollama/gemma4:e4b \
+  --verifier-model ollama/gemma4:e4b \
+  --iterations 3 \
+  --prompt "a futuristic cyberpunk city skyline at night, neon lights, rain, 8k"
+```
+
+| Iteration | Score | Notes |
+|-----------|-------|-------|
+| 1 | 0.36 | Atmosphere present; missing neon, reflections |
+| 2 | 0.36 | Agent planned ControlNet but failed to execute tool calls |
+| 3 | **0.49** | Rain/reflections improved; neon still weak |
+
+**Takeaway:** Gemma4 is a capable *vision verifier* but less reliable at
+complex tool-call execution. Use a stronger model (Claude, GPT-4o) for the
+agent, and reserve local models for `--verifier-model`.
 
 ---
 
@@ -355,201 +536,188 @@ comfyclaw node-path     Print the path to the bundled plugin directory
 from comfyclaw import ClawHarness, HarnessConfig
 
 cfg = HarnessConfig(
-    # api_key="sk-ant-..."  # optional: or set ANTHROPIC_API_KEY env var
     server_address="127.0.0.1:8188",
-    model="anthropic/claude-sonnet-4-5",  # any LiteLLM model string
+    model="anthropic/claude-sonnet-4-5",
     max_iterations=3,
     success_threshold=0.85,
 )
 
+# From a workflow file
 with ClawHarness.from_workflow_file("workflow_api.json", cfg) as h:
+    image_bytes = h.run("a red fox at dawn, photorealistic")
+
+# Or build from scratch (empty dict)
+with ClawHarness.from_workflow_dict({}, cfg) as h:
     image_bytes = h.run("a red fox at dawn, photorealistic")
 
 if image_bytes:
     open("output.png", "wb").write(image_bytes)
 ```
 
-### HarnessConfig fields
+### HarnessConfig
 
 ```python
 @dataclass
 class HarnessConfig:
-    api_key: str = ""                  # optional; or set provider env var
+    api_key: str = ""                   # or set provider env var
     server_address: str = "127.0.0.1:8188"
-    model: str = "anthropic/claude-sonnet-4-5"  # any LiteLLM model string
-    verifier_model: str | None = None  # None = use model; set for vision-specific model
+    model: str = "anthropic/claude-sonnet-4-5"
+    verifier_model: str | None = None   # None = same as model
     max_iterations: int = 3
-    success_threshold: float = 0.85    # stop early when score ≥ this
-    sync_port: int = 8765              # 0 = disable live sync
-    skills_dir: str | None = None      # None = use built-in skills
-    evolve_from_best: bool = True      # accumulate topology across iters
-    max_images: int = 5                # images kept in RAM per run
-    score_weights: tuple = (0.6, 0.4) # (requirement, detail) score blend
+    success_threshold: float = 0.85
+    sync_port: int = 8765               # 0 = disable live sync
+    skills_dir: str | None = None       # None = built-in skills
+    evolve_from_best: bool = True       # accumulate topology across iters
+    max_images: int = 5
+    score_weights: tuple = (0.6, 0.4)   # (requirement, detail) blend
+    image_model: str | None = None      # pin checkpoint/UNET filename
+    max_repair_attempts: int = 2
+    verifier_mode: str = "vlm"          # "vlm", "human", or "hybrid"
 ```
 
 ### Topology accumulation
 
-When `evolve_from_best=True` (the default), each iteration starts from the
-**best workflow snapshot** produced so far, not the original base.  This means
-LoRA nodes added in round 1 persist into round 2, and the agent only adds
-incremental improvements.
+When `evolve_from_best=True` (default), each iteration starts from the **best
+workflow snapshot** so far:
 
 ```
-Iteration 1:  base(3 nodes) → agent adds LoRA → 4 nodes   score=0.62
-Iteration 2:  starts from 4-node snapshot → agent adds ControlNet → 6 nodes  score=0.81
-Iteration 3:  starts from 6-node snapshot → agent adds hires-fix → 8 nodes   score=0.91 ✅
+Iter 1:  base(3 nodes) → +LoRA         → 4 nodes   score=0.62
+Iter 2:  4-node snapshot → +ControlNet → 6 nodes   score=0.81
+Iter 3:  6-node snapshot → +hires-fix  → 8 nodes   score=0.91 ✅
 ```
 
-Set `evolve_from_best=False` to reset to `base_workflow` each iteration.
-
-### Using WorkflowManager directly
+### WorkflowManager
 
 ```python
 from comfyclaw.workflow import WorkflowManager
 
 wm = WorkflowManager.from_file("workflow_api.json")
 
-# Inspect
-print(wm)                                 # repr with node count
-print(WorkflowManager.summarize(wm.workflow))  # human-readable table
+print(wm)                                      # repr with node count
+print(WorkflowManager.summarize(wm.workflow))   # human-readable table
+errors = wm.validate()                          # check graph integrity
 
-# Validate
-errors = wm.validate()                    # list of dangling link messages
-
-# Modify
 nid = wm.add_node("LoraLoader", nickname="My LoRA",
-                  lora_name="detail.safetensors",
-                  strength_model=0.8, strength_clip=0.8)
-wm.connect("1", 0, nid, "model")         # wire checkpoint → LoRA
-wm.set_param("3", "steps", 30)           # update KSampler steps
-wm.delete_node("2")                      # remove a node
-
-clone = wm.clone()                       # independent deep copy
+                   lora_name="detail.safetensors",
+                   strength_model=0.8, strength_clip=0.8)
+wm.connect("1", 0, nid, "model")
+wm.set_param("3", "steps", 30)
+wm.delete_node("2")
 ```
 
-### Using ComfyClient directly
+### ComfyClient
 
 ```python
 from comfyclaw.client import ComfyClient
 
 client = ComfyClient("127.0.0.1:8188")
-print(client.is_alive())                 # True / False
-
 resp   = client.queue_prompt(wm.workflow)
 entry  = client.wait_for_completion(resp["prompt_id"], timeout=300)
 images = client.collect_images(entry)    # list[bytes]
-
-# Query available models
-info = client.object_info("LoraLoader")
-loras = info["LoraLoader"]["input"]["required"]["lora_name"][0]
 ```
 
 ---
 
-## How the live sync works
+## Architecture
 
-```
-Python process                    Browser (ComfyUI)
-──────────────────────────────    ─────────────────────────────────
-SyncServer (ws://localhost:8765)  ComfyClaw-Sync extension
-     │                                     │
-     │  { type: "workflow_update",         │
-     │    workflow: { "1": {...}, ... } }   │
-     │ ──────────────────────────────────► │
-     │                                     │
-     │                             loadWorkflowIntoCanvas()
-     │                               → app.loadApiJson()   (ComfyUI ≥ 0.2)
-     │                               → app.loadGraphData() (older versions)
-     │                               → app.graph.configure()  (fallback)
-```
+### The agent loop
 
-Every time the agent calls a tool that mutates the workflow (e.g.
-`add_lora_loader`, `set_param`, `connect_nodes`), the harness broadcasts the
-updated workflow dict over the WebSocket.  The JS extension receives it,
-converts it to LiteGraph format if needed, and reloads the canvas — so you
-watch the graph evolve in real time as the agent works.
+Each iteration of the harness follows this cycle:
 
-The sync server runs in a background daemon thread, so it never blocks the
-main generation loop.
+1. **Agent evolves** — the LLM reads skills, inspects the workflow, calls tools
+   (`add_node`, `connect_nodes`, `set_param`, etc.) to modify the graph
+2. **Validate** — `finalize_workflow` auto-validates; blocks if errors found
+3. **Submit** — workflow is sent to ComfyUI's `/prompt` endpoint
+4. **Repair** (if needed) — ComfyUI errors trigger up to N repair attempts
+   where the agent sees the error and fixes the topology
+5. **Generate** — ComfyUI runs the workflow and produces an image
+6. **Verify** — VLM / human / hybrid verifier scores the image
+7. **Feedback** — score and suggestions fed back to agent for next iteration
 
----
+### Incremental visualization
 
-## Agent tools
+Changes appear **node by node** on the ComfyUI canvas. Each new node is briefly
+highlighted in blue. The sync protocol uses an efficient diff algorithm:
 
-The LLM agent has 14 tools grouped by category:
-
-| Category | Tool | What it does |
+| Message | When sent | Content |
 |---|---|---|
-| Inspect | `inspect_workflow` | Show all nodes and connections as text |
-| Inspect | `query_available_models` | List installed LoRA / ControlNet / checkpoint files |
-| Basic | `set_param` | Set a scalar input on a node |
-| Basic | `add_node` | Append a new node, returns its ID |
-| Basic | `connect_nodes` | Wire one node's output to another's input |
-| Basic | `delete_node` | Remove a node and clean up dangling links |
-| LoRA | `add_lora_loader` | Insert LoraLoader and re-wire model/CLIP consumers |
-| ControlNet | `add_controlnet` | Add ControlNetLoader + preprocessor + Apply node |
-| Regional | `add_regional_attention` | Split conditioning into foreground/background regions |
-| Refinement | `add_hires_fix` | Add LatentUpscaleBy + second KSampler + VAEDecode |
-| Refinement | `add_inpaint_pass` | Add targeted inpaint stage for a specific region |
-| Skills | `read_skill` | Load full instructions for a named skill on demand |
-| Control | `report_evolution_strategy` | Declare plan before making changes |
-| Control | `finalize_workflow` | Signal completion and return rationale |
+| `workflow_update` | First load / reconnect | Full workflow snapshot |
+| `workflow_diff` | Subsequent mutations | Granular ops: `add_node`, `remove_node`, `update_node` |
 
-### Agent decision heuristics
+Adjust animation speed: `localStorage.setItem('comfyclaw_op_delay', '200')` (default 400 ms).
 
-The agent is instructed to load a skill's full instructions before applying a technique,
-then choose tools based on verifier feedback:
+### WebSocket protocol
 
-| Verifier finding | Skill to read | Primary tool |
+Bidirectional communication between the Python process and ComfyUI extension:
+
+**Server → Client:**
+
+| Message | Purpose |
+|---|---|
+| `workflow_update` | Full workflow snapshot |
+| `workflow_diff` | Incremental ops |
+| `request_feedback` | Ask human for feedback |
+| `generation_status` | Progress: `running` / `verifying` / `repairing` |
+| `generation_complete` | Final score and image path |
+| `generation_error` | Error details |
+
+**Client → Server:**
+
+| Message | Purpose |
+|---|---|
+| `human_feedback` | Score, text, action (accept/override) |
+| `trigger_generation` | Start a run from the ComfyUI panel |
+
+### Agent tools (15)
+
+| Category | Tool | Purpose |
 |---|---|---|
-| Flat / low-depth background | `controlnet-control` | `add_controlnet` (depth) |
-| Blurry edges / lost structure | `controlnet-control` | `add_controlnet` (canny) |
-| Wrong human pose / body | `controlnet-control` | `add_controlnet` (pose) |
-| Plasticky skin / poor texture | `lora-enhancement` | `add_lora_loader` (detail) |
-| Wrong anatomy (hands, fingers) | `lora-enhancement` | `add_lora_loader` (anatomy) |
-| Style inconsistency | `lora-enhancement` | `add_lora_loader` (style) |
-| Subject and background bleed | `regional-control` | `add_regional_attention` |
-| Low resolution / soft fine detail | `hires-fix` | `add_hires_fix` |
-| Localised artifact in one area | — | `add_inpaint_pass` |
+| Inspect | `inspect_workflow` | Show all nodes and connections |
+| Inspect | `query_available_models` | List installed models/LoRAs/ControlNets |
+| Validate | `validate_workflow` | Check dangling refs, wrong slots, missing outputs |
+| Basic | `set_param` | Set a scalar input |
+| Basic | `add_node` | Append a new node |
+| Basic | `connect_nodes` | Wire output → input |
+| Basic | `delete_node` | Remove node + clean up links |
+| LoRA | `add_lora_loader` | Insert LoRA with auto re-wiring |
+| ControlNet | `add_controlnet` | Add ControlNet pipeline |
+| Regional | `add_regional_attention` | Foreground/background conditioning split |
+| Refinement | `add_hires_fix` | Upscale + second KSampler |
+| Refinement | `add_inpaint_pass` | Targeted region inpainting |
+| Skills | `read_skill` | Load skill instructions on demand |
+| Control | `report_evolution_strategy` | Declare plan before changes |
+| Control | `finalize_workflow` | Complete iteration (auto-validates) |
 
 ---
 
 ## Skills
 
-ComfyClaw's skills system follows the [Anthropic Agent Skills specification](https://agentskills.dev/specification).
-Skills are directories containing a `SKILL.md` file with YAML frontmatter.
+ComfyClaw's skills follow the [Agent Skills spec](https://agentskills.dev/specification).
+Each skill is a directory with a `SKILL.md` file containing YAML frontmatter.
 
-**Progressive disclosure** keeps the agent's context lean:
-
-1. **Startup (stage 1)** — only `name` and `description` from each skill's frontmatter
-   are surfaced in an `<available_skills>` XML block in the system prompt.
-2. **On demand (stage 2)** — when the agent decides to apply a skill it calls
-   `read_skill("<name>")`, which loads the full instruction body at that moment.
-
-This means 11 skills can be registered without flooding the context window on every
-iteration.
+**Progressive disclosure** keeps context lean:
+1. **Startup** — only `name` + `description` from frontmatter appear in the system prompt
+2. **On demand** — agent calls `read_skill("name")` to load full instructions
 
 ### Built-in skills
 
-| Skill | When the agent activates it |
+| Skill | When activated |
 |---|---|
-| `high-quality` | User asks for "high quality", "sharp", "detailed", "8K" |
-| `photorealistic` | "photo", "DSLR", "realistic", "cinematic", "RAW" |
-| `creative` | "creative", "artistic", "fantasy", "concept art", "surreal" |
-| `aesthetic-drawing` | "aesthetic drawing", "masterpiece", "award-winning", "professional art" |
-| `creative-drawing` | "cool", "dreamy", "futuristic", "artistic" (prompt upgrade) |
-| `lora-enhancement` | Verifier reports texture/lighting/anatomy defects |
-| `controlnet-control` | Verifier reports flat background, blurry edges, wrong pose |
-| `regional-control` | Subject and background style bleed |
-| `hires-fix` | Blurry output, soft detail, base resolution ≤ 768 |
-| `spatial` | Prompt involves multiple objects with spatial relationships |
-| `text-rendering` | Prompt contains quoted text, "a sign saying…", labels |
+| `workflow-builder` | Building from scratch (architecture recipes + slot reference) |
+| `qwen-image-2512` | Qwen-Image-2512 model (Lightning 4-step pipeline) |
+| `high-quality` | "high quality", "sharp", "detailed", "8K" |
+| `photorealistic` | "photo", "DSLR", "realistic", "cinematic" |
+| `creative` | "creative", "artistic", "fantasy", "concept art" |
+| `aesthetic-drawing` | "masterpiece", "award-winning", "professional art" |
+| `creative-drawing` | "cool", "dreamy", "futuristic" |
+| `lora-enhancement` | Texture / lighting / anatomy defects |
+| `controlnet-control` | Flat background, blurry edges, wrong pose |
+| `regional-control` | Subject–background style bleed |
+| `hires-fix` | Low resolution, soft detail |
+| `spatial` | Multiple objects with spatial relationships |
+| `text-rendering` | Quoted text, signs, labels |
 
 ### Adding custom skills
-
-Skills follow the [Agent Skills spec](https://agentskills.dev/specification) — a
-directory whose name is the skill's `name`, containing a `SKILL.md` with YAML
-frontmatter:
 
 ```
 my_skills/
@@ -557,61 +725,28 @@ my_skills/
     └── SKILL.md
 ```
 
-**Minimal `SKILL.md`:**
-
 ```markdown
 ---
 name: portrait-lighting
 description: >-
-  Optimise lighting for portrait photography. Use when the user mentions
-  "portrait", "face", "skin", "studio lighting", or asks for flattering
-  skin tone rendering.
+  Optimise lighting for portrait photography. Activate when the user mentions
+  "portrait", "face", "studio lighting".
 ---
 
 1. Append `, dramatic studio lighting, rim light, catchlights` to the positive prompt.
-2. Set KSampler CFG to 8.0–9.0 for stronger lighting contrast.
-3. Consider read_skill("controlnet-control") and add a normal-map ControlNet
-   for additional skin texture depth.
+2. Set KSampler CFG to 8.0–9.0.
+3. Consider adding a normal-map ControlNet for skin texture depth.
 ```
-
-Required frontmatter fields: `name` (kebab-case, must match directory name) and
-`description`.  Optional: `license`, `compatibility`, `allowed-tools`, `metadata`.
 
 ```bash
-comfyclaw run --workflow wf.json --prompt "…" --skills-dir ./my_skills/
-```
-
-```python
-cfg = HarnessConfig(api_key="…", skills_dir="./my_skills/")
-```
-
-### Using SkillManager directly
-
-```python
-from comfyclaw.skill_manager import SkillManager
-
-sm = SkillManager()                          # built-in skills
-sm = SkillManager("./my_skills/")           # custom dir
-
-# Stage-1: XML block for agent system prompt
-print(sm.build_available_skills_xml())
-
-# Stage-2: load full instructions on demand
-body = sm.get_body("lora-enhancement")
-
-# Lightweight heuristic matching
-relevant = sm.detect_relevant_skills("photorealistic portrait")
-# → ['photorealistic']
-
-# List of {name, description, location} dicts
-manifest = sm.get_manifest()
+comfyclaw run --prompt "..." --skills-dir ./my_skills/
 ```
 
 ---
 
 ## Workflow format
 
-ComfyClaw uses the **API format** (not the UI format with `nodes` array).
+ComfyClaw uses the **API format** (not the UI format):
 
 ```json
 {
@@ -622,47 +757,29 @@ ComfyClaw uses the **API format** (not the UI format with `nodes` array).
   },
   "2": {
     "class_type": "CLIPTextEncode",
-    "_meta": { "title": "Positive Prompt" },
     "inputs": { "clip": ["1", 1], "text": "a red fox" }
   }
 }
 ```
 
-To get the API format from ComfyUI: **Workflow → Export (API)** in the menu.
+Export from ComfyUI: **Workflow → Export (API)** in the menu.
 
-`ClawHarness.from_workflow_file()` also handles:
-- Prompt-keyed saves: `{ "prompt": { "1": {...}, ... } }`
-- UI format: looks for a sibling `*_api.json` first; falls back to a best-effort conversion
+`from_workflow_file()` also handles prompt-keyed saves (`{"prompt": {...}}`)
+and UI format (looks for sibling `*_api.json`; falls back to conversion).
 
 ---
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer guide, including
-pre-commit hooks, CI check mapping, and contribution workflow.
-
-### Quick-reference
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ```bash
-# Bootstrap
-uv sync --group dev
-
-# Install git hooks (run once per clone)
-uv run pre-commit install                       # commit-stage: ruff + file checks
-uv run pre-commit install --hook-type pre-push  # push-stage:   pytest + uv build
-
-# Run all hooks manually
-uv run pre-commit run --all-files                        # commit stage
-uv run pre-commit run --all-files --hook-stage push      # push stage
-
-# Tests (all offline, ~30 s)
-uv run pytest -ra -q
-
-# Lint / format
-uv run ruff check --fix . && uv run ruff format .
-
-# Build wheel
-uv build
+uv sync --group dev                                      # bootstrap
+uv run pre-commit install                                # commit hooks
+uv run pre-commit install --hook-type pre-push           # push hooks
+uv run pytest -ra -q                                     # 192 tests, < 1 s
+uv run ruff check --fix . && uv run ruff format .        # lint + format
+uv build                                                 # build wheel
 ```
 
 ---
@@ -674,51 +791,47 @@ comfyclaw/
 ├── pyproject.toml
 ├── README.md
 ├── comfyclaw/
-│   ├── __init__.py          custom_node_path(), public re-exports
-│   ├── client.py            ComfyClient — HTTP REST + polling
-│   ├── workflow.py          WorkflowManager — graph mutations
-│   ├── agent.py             ClawAgent — LLM tool-use loop via LiteLLM (14 tools)
-│   ├── verifier.py          ClawVerifier — LLM vision QA via LiteLLM
-│   ├── memory.py            ClawMemory — per-run attempt history
-│   ├── sync_server.py       SyncServer — WebSocket broadcast thread
-│   ├── skill_manager.py     SkillManager — Agent Skills spec loader
-│   ├── harness.py           ClawHarness + HarnessConfig
-│   ├── cli.py               comfyclaw CLI entry point
-│   ├── custom_node/         ← bundled ComfyUI plugin
-│   │   ├── __init__.py      ComfyUI extension registration
+│   ├── __init__.py           Public re-exports
+│   ├── cli.py                CLI entry point (run / serve / dry-run / install-node)
+│   ├── harness.py            ClawHarness — orchestrates the agent loop
+│   ├── agent.py              ClawAgent — LLM tool-use loop (15 tools)
+│   ├── verifier.py           ClawVerifier — vision LLM scoring
+│   ├── human_verifier.py     HumanVerifier + HybridVerifier
+│   ├── workflow.py           WorkflowManager — graph mutations + validation
+│   ├── client.py             ComfyClient — HTTP + polling
+│   ├── memory.py             ClawMemory — per-run attempt history
+│   ├── sync_server.py        SyncServer — bidirectional WebSocket
+│   ├── skill_manager.py      SkillManager — Agent Skills spec loader
+│   ├── custom_node/          Bundled ComfyUI plugin (v4.0)
+│   │   ├── __init__.py
 │   │   └── js/
-│   │       └── comfy_claw_sync.js   WebSocket client + canvas reload
-│   └── skills/              ← built-in skills (Agent Skills format)
-│       ├── high-quality/    SKILL.md with YAML frontmatter
-│       ├── photorealistic/
-│       ├── creative/
-│       ├── aesthetic-drawing/
-│       ├── creative-drawing/
-│       ├── lora-enhancement/
-│       ├── controlnet-control/
-│       ├── regional-control/
-│       ├── hires-fix/
-│       ├── spatial/
-│       └── text-rendering/
-└── tests/
-    ├── conftest.py
-    ├── test_workflow.py      23 tests
-    ├── test_memory.py        12 tests
-    ├── test_skill_manager.py 43 tests
-    ├── test_verifier.py      16 tests
-    ├── test_agent.py         17 tests
-    └── test_harness.py       25 tests
+│   │       └── comfy_claw_sync.js
+│   └── skills/               Built-in skills
+│       ├── workflow-builder/  Architecture recipes
+│       ├── qwen-image-2512/  Qwen model config
+│       ├── photorealistic/   … and 10 more
+│       └── ...
+└── tests/                    192 tests (all offline, < 1 s)
+    ├── test_agent.py
+    ├── test_harness.py
+    ├── test_workflow.py
+    ├── test_sync_server.py
+    ├── test_human_verifier.py
+    └── ...
 ```
 
 ---
 
 ## Known constraints
 
-- **Apple MPS + FP8 models**: `Float8_e4m3fn` is not supported on Apple Silicon
-  MPS. Set `weight_dtype: "default"` in your `UNETLoader` node if you see this
-  error. The agent is instructed not to change dtype to `fp16` (invalid option).
-- **ComfyUI version**: The sync JS extension tries `app.loadApiJson` (≥ 0.2),
-  `app.loadGraphData`, and `app.graph.configure` in order. All three are
-  supported.
-- **Workflow format**: Only API format is sent to ComfyUI's `/prompt` endpoint.
-  UI format workflows are converted on load.
+- **Apple MPS + FP8 models**: `Float8_e4m3fn` is not supported on Apple Silicon.
+  The agent auto-detects and repairs by setting `weight_dtype: "default"`. If the
+  model file is natively fp8, the hardware incompatibility persists.
+- **Serve mode requires WebSocket**: Do not use `--no-sync` with `comfyclaw serve`.
+- **Auto-repair**: Up to `--max-repair-attempts` (default 2) per iteration.
+  Transient infrastructure faults (e.g. BrokenPipe) are retried once
+  automatically.
+- **ComfyUI versions**: The JS extension tries `app.loadApiJson` (≥ 0.2),
+  `app.loadGraphData`, and `app.graph.configure` in order.
+- **Workflow format**: Only API format is sent to `/prompt`. UI format is
+  converted on load.
