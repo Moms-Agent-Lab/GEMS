@@ -90,6 +90,11 @@ outputs/
 # (allow example images committed deliberately)
 !docs/images/*.png
 
+# ─── Benchmark / experiment outputs ───────────────────────────────────────────
+benchmark_*/
+experiment_results/
+*.db
+
 # ─── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 logs/

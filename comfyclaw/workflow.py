@@ -360,7 +360,7 @@ class WorkflowManager:
     }
 
     @classmethod
-    def validate(cls, workflow: dict) -> list[str]:
+    def validate_graph(cls, workflow: dict) -> list[str]:
         """Check graph connectivity and return a list of error strings (empty = valid)."""
         errors: list[str] = []
         if not workflow:
@@ -379,6 +379,21 @@ class WorkflowManager:
 
         for nid, node in workflow.items():
             ct = node.get("class_type", "?")
+
+            # SaveImage / PreviewImage must have both `images` and `filename_prefix`
+            if ct in ("SaveImage", "PreviewImage"):
+                inputs = node.get("inputs", {})
+                if "images" not in inputs:
+                    errors.append(
+                        f"[{nid}] {ct} is missing required input 'images'. "
+                        "Connect it to a VAEDecode or image output."
+                    )
+                if ct == "SaveImage" and "filename_prefix" not in inputs:
+                    errors.append(
+                        f"[{nid}] SaveImage is missing 'filename_prefix'. "
+                        "Set it with set_param."
+                    )
+
             for inp_name, val in node.get("inputs", {}).items():
                 if not (isinstance(val, list) and len(val) == 2 and isinstance(val[0], str)):
                     continue
@@ -397,6 +412,39 @@ class WorkflowManager:
                     )
 
         return errors
+
+    @classmethod
+    def ensure_output_wiring(cls, workflow: dict) -> list[str]:
+        """Auto-fix common SaveImage/PreviewImage wiring issues.
+
+        Returns a list of fixes applied (empty if nothing needed fixing).
+        """
+        fixes: list[str] = []
+        if not workflow:
+            return fixes
+
+        # Find the last VAEDecode node (most likely the final image output)
+        decode_nid: str | None = None
+        for nid in sorted(workflow.keys(), key=lambda k: int(k) if k.isdigit() else 0, reverse=True):
+            if workflow[nid].get("class_type") == "VAEDecode":
+                decode_nid = nid
+                break
+
+        for nid, node in workflow.items():
+            ct = node.get("class_type", "")
+            if ct not in ("SaveImage", "PreviewImage"):
+                continue
+            inputs = node.setdefault("inputs", {})
+
+            if "images" not in inputs and decode_nid:
+                inputs["images"] = [decode_nid, 0]
+                fixes.append(f"[{nid}] {ct}.images → node {decode_nid} (VAEDecode)")
+
+            if ct == "SaveImage" and "filename_prefix" not in inputs:
+                inputs["filename_prefix"] = "ComfyClaw"
+                fixes.append(f"[{nid}] SaveImage.filename_prefix = 'ComfyClaw'")
+
+        return fixes
 
     @staticmethod
     def summarize(workflow: dict) -> str:

@@ -108,35 +108,45 @@ class TestGetNodeByTitle:
 
 class TestValidate:
     def test_valid_workflow_no_errors(self, wm: WorkflowManager) -> None:
-        wm.add_node("SaveImage", "Save", images=["3", 0])
-        assert WorkflowManager.validate(wm.workflow) == []
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
+        assert WorkflowManager.validate_graph(wm.workflow) == []
 
     def test_detects_dangling_link(self, wm: WorkflowManager) -> None:
-        wm.add_node("SaveImage", "Save", images=["3", 0])
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
         wm.workflow["3"]["inputs"]["model"] = ["999", 0]
-        errors = WorkflowManager.validate(wm.workflow)
+        errors = WorkflowManager.validate_graph(wm.workflow)
         assert len(errors) == 1
         assert "999" in errors[0]
         assert "3" in errors[0]
 
     def test_no_false_positives_for_scalars(self, wm: WorkflowManager) -> None:
-        wm.add_node("SaveImage", "Save", images=["3", 0])
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
         wm.set_param("3", "cfg", 7.5)
-        assert WorkflowManager.validate(wm.workflow) == []
+        assert WorkflowManager.validate_graph(wm.workflow) == []
 
     def test_detects_missing_output(self, wm: WorkflowManager) -> None:
-        errors = WorkflowManager.validate(wm.workflow)
+        errors = WorkflowManager.validate_graph(wm.workflow)
         assert any("SaveImage" in e for e in errors)
 
     def test_detects_wrong_slot(self, wm: WorkflowManager) -> None:
-        wm.add_node("SaveImage", "Save", images=["3", 0])
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
         wm.workflow["2"]["inputs"]["clip"] = ["1", 5]
-        errors = WorkflowManager.validate(wm.workflow)
+        errors = WorkflowManager.validate_graph(wm.workflow)
         assert any("slot 5" in e for e in errors)
 
     def test_empty_workflow(self) -> None:
-        errors = WorkflowManager.validate({})
+        errors = WorkflowManager.validate_graph({})
         assert any("empty" in e.lower() for e in errors)
+
+    def test_detects_missing_images_input(self, wm: WorkflowManager) -> None:
+        wm.add_node("SaveImage", "Save", filename_prefix="ComfyClaw")
+        errors = WorkflowManager.validate_graph(wm.workflow)
+        assert any("images" in e.lower() for e in errors)
+
+    def test_detects_missing_filename_prefix(self, wm: WorkflowManager) -> None:
+        wm.add_node("SaveImage", "Save", images=["3", 0])
+        errors = WorkflowManager.validate_graph(wm.workflow)
+        assert any("filename_prefix" in e.lower() for e in errors)
 
 
 class TestClone:

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from .agent import ClawAgent
 from .client import ComfyClient
+from .experience_db import ExperienceDB
 from .memory import ClawMemory
 from .sync_server import SyncServer
 from .verifier import ClawVerifier, VerifierResult
@@ -97,6 +98,10 @@ class HarnessConfig:
     max_repair_attempts: int = 2
     verifier_mode: str = "vlm"  # "vlm", "human", or "hybrid"
     stage_gated: bool = False
+    max_nodes: int = 20
+    complexity_penalty: float = 0.02
+    experience_db_path: str | None = None
+    baseline_first: bool = False
     """
     Pin the image-generation model (checkpoint / UNET) used by ComfyUI.
 
@@ -207,6 +212,9 @@ class ClawHarness:
         self._sync = SyncServer(port=config.sync_port) if config.sync_port else None
         self._memory = ClawMemory(max_images=config.max_images)
         self._evolution_log = EvolutionLog()
+        self._experience_db: ExperienceDB | None = None
+        if config.experience_db_path:
+            self._experience_db = ExperienceDB(config.experience_db_path)
 
         self.on_status: _StatusCallback | None = None
 
@@ -303,6 +311,62 @@ class ClawHarness:
         best_workflow_snapshot: dict | None = None
         last_result: VerifierResult | None = None
 
+        # ── Warm-start from experience DB ─────────────────────────────
+        # Only reuse a topology from a very similar prompt (relevance >= 0.6)
+        # to avoid inheriting broken topology from unrelated prompts.
+        if self._experience_db:
+            warm = self._experience_db.get_warm_start(prompt, min_score=0.6, top_k=1)
+            if warm and warm[0].get("relevance", 0) >= 0.6:
+                ws = warm[0]
+                print(
+                    f"[ClawHarness] 🧠 Warm-start: reusing topology from "
+                    f"{ws['prompt']!r} (score={ws['score']:.2f}, "
+                    f"relevance={ws['relevance']:.2f})"
+                )
+                self.base_workflow = copy.deepcopy(ws["topology"])
+                if cfg.image_model:
+                    wm_ws = WorkflowManager(self.base_workflow)
+                    wm_ws.apply_image_model(cfg.image_model)
+                    self.base_workflow = wm_ws.workflow
+
+        # ── Baseline-first: generate from the unmodified base workflow ────
+        # When a warm-start workflow is provided, we first generate an image
+        # using the untouched base pipeline so there is always a guaranteed
+        # baseline.  The agent then evolves on top of this in later iterations.
+        if cfg.baseline_first and self.base_workflow:
+            print("[ClawHarness] 🏁 Baseline-first: generating from unmodified base workflow…")
+            wm_base = WorkflowManager(copy.deepcopy(self.base_workflow))
+            pos_inj, _ = wm_base.inject_prompt(positive=prompt)
+            if pos_inj:
+                print(f"[ClawHarness] 📝 Seeded user prompt into encoder node(s) {pos_inj}")
+            WorkflowManager.ensure_output_wiring(wm_base.workflow)
+            try:
+                qr = self._client.queue_prompt(wm_base.workflow)
+                history = self._client.wait_for_completion(qr["prompt_id"], timeout=300)
+                images = self._client.collect_images(history)
+                if images:
+                    base_img = images[0]
+                    base_vr = self._verifier.verify(base_img, prompt) if not dry_run else None
+                    base_score = base_vr.score if base_vr else 0.0
+                    print(f"[ClawHarness] 🏁 Baseline score: {base_score:.3f}")
+                    best_image = base_img
+                    best_score = base_score
+                    best_workflow_snapshot = copy.deepcopy(wm_base.workflow)
+                    last_result = base_vr
+                    self._memory.record(
+                        iteration=0,
+                        workflow_snapshot=wm_base.workflow,
+                        verifier_score=base_score,
+                        passed=base_vr.passed if base_vr else [],
+                        failed=base_vr.failed if base_vr else [],
+                        experience="Baseline generation from warm-start workflow.",
+                        image_bytes=base_img,
+                    )
+                else:
+                    print("[ClawHarness] ⚠️ Baseline: no images in output")
+            except Exception as exc:
+                print(f"[ClawHarness] ⚠️ Baseline generation failed: {exc}")
+
         for iteration in range(1, cfg.max_iterations + 1):
             self._current_iteration = iteration
             print(f"\n--- Iteration {iteration}/{cfg.max_iterations} ---")
@@ -382,6 +446,38 @@ class ClawHarness:
             if cfg.image_model:
                 wm.apply_image_model(cfg.image_model)
 
+            # ── Auto-fix output wiring ────────────────────────────────────
+            output_fixes = WorkflowManager.ensure_output_wiring(wm.workflow)
+            if output_fixes:
+                print(f"[ClawHarness] 🔧 Auto-fixed output wiring: {output_fixes}")
+
+            # ── Max-nodes guard ───────────────────────────────────────────
+            if len(wm.workflow) > cfg.max_nodes:
+                print(
+                    f"[ClawHarness] ⚠  Workflow has {len(wm)} nodes "
+                    f"(max {cfg.max_nodes}). Trimming is left to the agent."
+                )
+
+            # ── Do-no-harm guard (iteration 2+) ──────────────────────────
+            # If we have a working best snapshot and the current workflow
+            # has MORE validation errors, rollback to the best snapshot
+            # and only allow prompt-level changes.
+            if iteration > 1 and best_workflow_snapshot is not None:
+                current_errs = WorkflowManager.validate_graph(wm.workflow)
+                best_errs = WorkflowManager.validate_graph(best_workflow_snapshot)
+                if len(current_errs) > len(best_errs) and len(best_errs) == 0:
+                    print(
+                        f"[ClawHarness] ⚠  Do-no-harm: current workflow has "
+                        f"{len(current_errs)} error(s) vs best snapshot (0). "
+                        f"Rolling back to best snapshot."
+                    )
+                    wm = WorkflowManager(copy.deepcopy(best_workflow_snapshot))
+                    # Re-inject prompt only
+                    wm.inject_prompt(positive=prompt)
+                    if cfg.image_model:
+                        wm.apply_image_model(cfg.image_model)
+                    WorkflowManager.ensure_output_wiring(wm.workflow)
+
             self._on_workflow_change(wm.workflow)
 
             # ── Dry-run mode ───────────────────────────────────────────────
@@ -421,6 +517,7 @@ class ClawHarness:
                     )
                     if cfg.image_model:
                         wm.apply_image_model(cfg.image_model)
+                    WorkflowManager.ensure_output_wiring(wm.workflow)
                     self._on_workflow_change(wm.workflow)
 
                 try:
@@ -509,6 +606,7 @@ class ClawHarness:
                         )
                         if cfg.image_model:
                             wm.apply_image_model(cfg.image_model)
+                        WorkflowManager.ensure_output_wiring(wm.workflow)
                         self._on_workflow_change(wm.workflow)
 
                         try:
@@ -584,6 +682,17 @@ class ClawHarness:
                 experience=experience,
                 image_bytes=image_bytes,
             )
+
+            # ── Persist to experience DB ─────────────────────────────────
+            if self._experience_db:
+                self._experience_db.record(
+                    prompt=prompt,
+                    score=result.score,
+                    topology=wm.to_dict(),
+                    experience_text=experience,
+                    passed=result.passed,
+                    failed=result.failed,
+                )
 
             # ── Early stop ────────────────────────────────────────────────
             if result.score >= cfg.success_threshold:

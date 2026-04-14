@@ -119,7 +119,7 @@ class TestDispatch:
 
     def test_finalize_stops_loop(self, wm: WorkflowManager) -> None:
         agent = _make_agent()
-        wm.add_node("SaveImage", "Save", images=["3", 0])
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
         result, stop = agent._dispatch("finalize_workflow", {"rationale": "All done."}, wm)
         assert stop is True
 
@@ -134,7 +134,7 @@ class TestDispatch:
         result, stop = agent._dispatch("validate_workflow", {}, wm)
         assert stop is False
         assert "SaveImage" in result
-        wm.add_node("SaveImage", "Save", images=["3", 0])
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
         result2, _ = agent._dispatch("validate_workflow", {}, wm)
         assert "✅" in result2
 
@@ -285,7 +285,7 @@ class TestQueryModels:
 
 class TestPlanAndPatch:
     def test_finalize_returns_rationale(self, wm: WorkflowManager) -> None:
-        wm.add_node("SaveImage", "Save", images=["3", 0])
+        wm.add_node("SaveImage", "Save", images=["3", 0], filename_prefix="ComfyClaw")
         strategy_resp = _litellm_tool_response(
             _litellm_tool_call(
                 "report_evolution_strategy",

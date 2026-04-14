@@ -12,9 +12,15 @@ Public API
 from pathlib import Path
 
 from .client import ComfyClient
+from .curriculum import CurriculumRunner
 from .evolve import SkillEvolver
+from .experience_db import ExperienceDB
 from .harness import ClawHarness, HarnessConfig
+from .mdp import MDPReward, MDPState
 from .memory import ClawMemory
+from .model_orchestrator import ModelOrchestrator
+from .skill_grounding import SkillGrounding
+from .skill_rag import SkillRAG
 from .skill_store import SkillStore
 from .stage_router import StageRouter
 from .sync_server import SyncServer
@@ -33,6 +39,13 @@ __all__ = [
     "ClawMemory",
     "ComfyClient",
     "ClawVerifier",
+    "CurriculumRunner",
+    "ExperienceDB",
+    "MDPReward",
+    "MDPState",
+    "ModelOrchestrator",
+    "SkillGrounding",
+    "SkillRAG",
     "VerifierResult",
     "RegionIssue",
     "SkillEvolver",

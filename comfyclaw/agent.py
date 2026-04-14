@@ -783,7 +783,7 @@ class ClawAgent:
                     return "Strategy noted.", False
 
                 case "validate_workflow":
-                    errs = WorkflowManager.validate(wm.workflow)
+                    errs = WorkflowManager.validate_graph(wm.workflow)
                     if errs:
                         msg = "⚠️ Validation found issues:\n" + "\n".join(f"  • {e}" for e in errs)
                         msg += "\n\nFix these before calling finalize_workflow."
@@ -796,7 +796,7 @@ class ClawAgent:
                     return f"✅ Workflow is valid ({node_count} nodes, no issues found).", False
 
                 case "finalize_workflow":
-                    errs = WorkflowManager.validate(wm.workflow)
+                    errs = WorkflowManager.validate_graph(wm.workflow)
                     if errs:
                         msg = (
                             "⚠️ Auto-validation found issues — fix before finalizing:\n"

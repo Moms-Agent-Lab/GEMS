@@ -5,6 +5,16 @@ Runs benchmark batches, clusters failure patterns, proposes skill mutations
 (create/update/merge/delete), validates on a held-out set, and commits or
 rolls back based on score improvement.
 
+Topology complexity regularisation
+-----------------------------------
+When ``complexity_penalty > 0`` the effective score used for acceptance
+decisions is::
+
+    adjusted = raw_score - complexity_penalty * max(0, node_count - baseline_nodes) / baseline_nodes
+
+This implements an Occam's-razor prior — penalising unnecessarily complex
+workflows that are more likely to break.
+
 Usage::
 
     evolver = SkillEvolver(skills_dir="skills/", benchmark_config=cfg)
@@ -28,6 +38,8 @@ from .skill_manager import SkillManager
 from .skill_store import SkillStore
 
 log = logging.getLogger(__name__)
+
+_MAX_LLM_RETRIES = 2
 
 
 # ── Data types ─────────────────────────────────────────────────────────────
@@ -58,6 +70,8 @@ class MutationProposal:
     pre_score: float = 0.0
     post_score: float | None = None
     accepted: bool = False
+    test_prompts: list[str] = field(default_factory=list)
+    test_scores: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -73,19 +87,23 @@ class EvolutionReport:
     failure_clusters: list[FailureCluster]
     mutations: list[MutationProposal]
     duration_s: float = 0.0
+    complexity_penalty_applied: float = 0.0
 
     def summary(self) -> str:
         delta = self.post_mean_score - self.pre_mean_score
         sign = "+" if delta >= 0 else ""
-        return (
+        lines = [
             f"Cycle {self.cycle}: score {self.pre_mean_score:.4f} -> "
-            f"{self.post_mean_score:.4f} ({sign}{delta:.4f})\n"
-            f"  Clusters: {len(self.failure_clusters)}\n"
+            f"{self.post_mean_score:.4f} ({sign}{delta:.4f})",
+            f"  Clusters: {len(self.failure_clusters)}",
             f"  Mutations: {self.mutations_proposed} proposed, "
             f"{self.mutations_accepted} accepted, "
-            f"{self.mutations_rejected} rejected\n"
-            f"  Duration: {self.duration_s:.1f}s"
-        )
+            f"{self.mutations_rejected} rejected",
+            f"  Duration: {self.duration_s:.1f}s",
+        ]
+        if self.complexity_penalty_applied > 0:
+            lines.append(f"  Complexity penalty: {self.complexity_penalty_applied:.4f}")
+        return "\n".join(lines)
 
 
 # ── Prompts for LLM-driven analysis ───────────────────────────────────────
@@ -100,17 +118,21 @@ Results:
 
 Available skills: {skill_names}
 
-Return a JSON array of failure clusters:
+Return ONLY a JSON array (no markdown fences, no explanation before/after):
 [
   {{
-    "name": "cluster_name",
+    "name": "cluster_name_snake_case",
     "description": "What characterizes this failure pattern",
     "prompt_indices": [0, 3, 7],
     "existing_skill": "skill-name or null if no skill covers this"
   }}
 ]
 
-Focus on actionable clusters where a skill could help. Ignore one-off failures.
+Rules:
+- Focus on actionable clusters where a skill could help.
+- Ignore one-off failures (cluster must have >=2 prompts).
+- Keep cluster names as snake_case identifiers.
+- Return valid JSON only — no trailing commas, no comments.
 """
 
 _PROPOSE_MUTATION_PROMPT = """\
@@ -128,21 +150,42 @@ Mutation types:
 - "merge": Combine overlapping skills
 - "delete": Remove a skill that is not helping
 
-Return a JSON object:
+Return ONLY a JSON object (no markdown fences, no explanation before/after):
 {{
   "mutation_type": "create|update|merge|delete",
   "target_skills": ["skill-name"],
   "rationale": "Why this mutation addresses the cluster",
   "proposed_changes": {{
     "name": "skill-name",
-    "description": "Skill description for frontmatter",
+    "description": "One-line skill description (no newlines)",
     "body": "Full SKILL.md body with instructions"
   }}
 }}
 
-For "update", provide the improved body text.
-For "merge", provide the merged skill content.
-For "delete", target_skills lists which to remove; proposed_changes can be empty.
+Rules:
+- For "update", provide the improved body text.
+- For "merge", provide the merged skill content.
+- For "delete", target_skills lists which to remove; proposed_changes can be empty.
+- The "body" field MUST be a single JSON string — escape newlines as \\n.
+- Keep the body concise (under 3000 chars) with actionable node-level instructions.
+- Return valid JSON only — no trailing commas, no comments.
+"""
+
+_GENERATE_TEST_PROMPTS_PROMPT = """\
+Given this skill that was just created/updated for an image generation agent,
+generate exactly 3 test prompts that exercise the skill's core capability.
+
+Skill name: {skill_name}
+Failure cluster it addresses: {cluster_name}
+Affected prompts from the cluster: {affected_prompts}
+
+Return ONLY a JSON array of 3 strings (no markdown fences):
+["prompt 1", "prompt 2", "prompt 3"]
+
+Rules:
+- Each prompt should be a realistic image generation request.
+- Prompts should test the specific failure pattern the skill addresses.
+- Keep prompts concise (under 20 words each).
 """
 
 
@@ -159,6 +202,8 @@ class SkillEvolver:
     api_key    : API key for the LLM provider.
     min_improvement : Minimum score improvement to accept a mutation.
     max_mutations_per_cycle : Maximum mutations to attempt per cycle.
+    complexity_penalty : Per-excess-node score penalty (0 = disabled).
+    baseline_nodes : Reference node count for complexity penalty.
     """
 
     def __init__(
@@ -168,6 +213,8 @@ class SkillEvolver:
         api_key: str = "",
         min_improvement: float = 0.02,
         max_mutations_per_cycle: int = 3,
+        complexity_penalty: float = 0.02,
+        baseline_nodes: int = 10,
     ) -> None:
         self.skills_dir = Path(skills_dir)
         self.store = SkillStore(self.skills_dir)
@@ -176,6 +223,8 @@ class SkillEvolver:
         self.api_key = api_key
         self.min_improvement = min_improvement
         self.max_mutations_per_cycle = max_mutations_per_cycle
+        self.complexity_penalty = complexity_penalty
+        self.baseline_nodes = baseline_nodes
 
         if api_key:
             os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
@@ -235,10 +284,16 @@ class SkillEvolver:
                 proposal.pre_score = pre_mean
                 mutations.append(proposal)
 
-        # Step 3: Apply and validate each mutation
+        # Step 3: Generate test prompts for each mutation
+        for mutation in mutations:
+            test_prompts = self._generate_test_prompts(mutation, clusters)
+            mutation.test_prompts = test_prompts
+
+        # Step 4: Apply and validate each mutation
         accepted = 0
         rejected = 0
         post_mean = pre_mean
+        total_penalty = 0.0
 
         for mutation in mutations:
             log.info(
@@ -251,18 +306,21 @@ class SkillEvolver:
 
                 if run_validation_fn:
                     val_score = run_validation_fn()
-                    mutation.post_score = val_score
-                    improvement = val_score - pre_mean
+                    penalty = self._compute_complexity_penalty(results)
+                    adjusted_score = val_score - penalty
+                    total_penalty += penalty
+
+                    mutation.post_score = adjusted_score
+                    improvement = adjusted_score - pre_mean
 
                     if improvement >= self.min_improvement:
                         mutation.accepted = True
                         accepted += 1
-                        post_mean = val_score
+                        post_mean = adjusted_score
                         log.info(
-                            "Mutation accepted: +%.4f (%.4f -> %.4f)",
-                            improvement, pre_mean, val_score,
+                            "Mutation accepted: +%.4f (%.4f -> %.4f, penalty=%.4f)",
+                            improvement, pre_mean, adjusted_score, penalty,
                         )
-                        # Reload skill manager to pick up changes
                         self.skill_manager = SkillManager(str(self.skills_dir))
                     else:
                         self._rollback_mutation(mutation)
@@ -272,13 +330,24 @@ class SkillEvolver:
                             improvement, self.min_improvement,
                         )
                 else:
-                    # No validation function — accept optimistically
-                    mutation.accepted = True
-                    accepted += 1
-                    self.skill_manager = SkillManager(str(self.skills_dir))
+                    # No validation function — apply sanity checks before accepting.
+                    # Verify the skill was actually created/updated on disk.
+                    if self._verify_mutation_on_disk(mutation):
+                        mutation.accepted = True
+                        accepted += 1
+                        self.skill_manager = SkillManager(str(self.skills_dir))
+                        log.info("Mutation accepted (disk-verified, no validation fn)")
+                    else:
+                        self._rollback_mutation(mutation)
+                        rejected += 1
+                        log.warning("Mutation rejected: failed disk verification")
 
             except Exception as exc:
                 log.error("Mutation failed: %s", exc)
+                try:
+                    self._rollback_mutation(mutation)
+                except Exception:
+                    pass
                 rejected += 1
 
         return EvolutionReport(
@@ -291,6 +360,7 @@ class SkillEvolver:
             failure_clusters=clusters,
             mutations=mutations,
             duration_s=time.time() - t0,
+            complexity_penalty_applied=total_penalty,
         )
 
     def run_multi_cycle(
@@ -333,7 +403,7 @@ class SkillEvolver:
     # ------------------------------------------------------------------
 
     def _cluster_failures(self, failures: list[dict]) -> list[FailureCluster]:
-        """Use the LLM to cluster failures by pattern."""
+        """Use the LLM to cluster failures by pattern (with retry)."""
         results_for_llm = []
         for i, f in enumerate(failures[:30]):
             results_for_llm.append({
@@ -351,17 +421,10 @@ class SkillEvolver:
             skill_names=skill_names or "(none)",
         )
 
-        try:
-            resp = litellm.completion(
-                model=self.llm_model,
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            m = re.search(r"\[.*\]", text, re.DOTALL)
-            raw_clusters = json.loads(m.group() if m else text)
-        except Exception as exc:
-            log.error("Failure clustering failed: %s", exc)
+        raw_clusters = self._llm_json_call(
+            prompt, max_tokens=2048, expect_array=True
+        )
+        if raw_clusters is None:
             return []
 
         clusters: list[FailureCluster] = []
@@ -393,7 +456,6 @@ class SkillEvolver:
                 existing_skill=rc.get("existing_skill"),
             ))
 
-        # Sort by failure count (most impactful first)
         clusters.sort(key=lambda c: c.failure_count, reverse=True)
         return clusters
 
@@ -402,7 +464,7 @@ class SkillEvolver:
     # ------------------------------------------------------------------
 
     def _propose_mutation(self, cluster: FailureCluster) -> MutationProposal | None:
-        """Ask the LLM to propose a skill mutation for a failure cluster."""
+        """Ask the LLM to propose a skill mutation for a failure cluster (with retry)."""
         manifest = "\n".join(
             f"- {s['name']}: {s['description']}"
             for s in self.skill_manager.get_manifest()
@@ -423,17 +485,8 @@ class SkillEvolver:
             skills_manifest=manifest or "(no skills)",
         )
 
-        try:
-            resp = litellm.completion(
-                model=self.llm_model,
-                max_tokens=3000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = (resp.choices[0].message.content or "").strip()
-            m = re.search(r"\{.*\}", text, re.DOTALL)
-            data = json.loads(m.group() if m else text)
-        except Exception as exc:
-            log.error("Mutation proposal failed for cluster %s: %s", cluster.name, exc)
+        data = self._llm_json_call(prompt, max_tokens=4000, expect_array=False)
+        if data is None:
             return None
 
         return MutationProposal(
@@ -525,6 +578,145 @@ class SkillEvolver:
                     self.store.rollback_skill(skill_name)
                 except FileNotFoundError:
                     pass
+
+    # ------------------------------------------------------------------
+    # LLM call with retry
+    # ------------------------------------------------------------------
+
+    def _llm_json_call(
+        self,
+        prompt: str,
+        max_tokens: int = 2048,
+        expect_array: bool = False,
+    ) -> Any | None:
+        """Call the LLM and parse JSON from response, retrying on parse failure."""
+        last_error: Exception | None = None
+        for attempt in range(_MAX_LLM_RETRIES + 1):
+            try:
+                messages: list[dict] = [{"role": "user", "content": prompt}]
+                if attempt > 0:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"Your previous response had a JSON parse error: {last_error}. "
+                            "Please return ONLY valid JSON with no markdown fences or extra text."
+                        ),
+                    })
+
+                resp = litellm.completion(
+                    model=self.llm_model,
+                    max_tokens=max_tokens,
+                    messages=messages,
+                )
+                text = (resp.choices[0].message.content or "").strip()
+
+                # Strip markdown fences if present
+                text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+                text = re.sub(r"\n?```\s*$", "", text)
+
+                if expect_array:
+                    m = re.search(r"\[.*\]", text, re.DOTALL)
+                    return json.loads(m.group() if m else text)
+                else:
+                    m = re.search(r"\{.*\}", text, re.DOTALL)
+                    return json.loads(m.group() if m else text)
+
+            except (json.JSONDecodeError, AttributeError) as exc:
+                last_error = exc
+                log.warning(
+                    "JSON parse failed (attempt %d/%d): %s",
+                    attempt + 1, _MAX_LLM_RETRIES + 1, exc,
+                )
+            except Exception as exc:
+                log.error("LLM call failed: %s", exc)
+                return None
+
+        log.error("All %d JSON parse attempts failed", _MAX_LLM_RETRIES + 1)
+        return None
+
+    # ------------------------------------------------------------------
+    # Complexity penalty
+    # ------------------------------------------------------------------
+
+    def _compute_complexity_penalty(self, results: list[dict]) -> float:
+        """Compute average complexity penalty across results."""
+        if self.complexity_penalty <= 0:
+            return 0.0
+        total = 0.0
+        count = 0
+        for r in results:
+            nc = r.get("node_count", 0)
+            if nc > 0:
+                excess = max(0, nc - self.baseline_nodes)
+                total += self.complexity_penalty * excess / max(self.baseline_nodes, 1)
+                count += 1
+        return total / count if count else 0.0
+
+    # ------------------------------------------------------------------
+    # Test prompt generation
+    # ------------------------------------------------------------------
+
+    def _generate_test_prompts(
+        self,
+        mutation: MutationProposal,
+        clusters: list[FailureCluster],
+    ) -> list[str]:
+        """Generate test prompts for a mutation to enable grounded validation."""
+        cluster = next(
+            (c for c in clusters if c.name == mutation.failure_cluster), None
+        )
+        if not cluster:
+            return []
+
+        prompt = _GENERATE_TEST_PROMPTS_PROMPT.format(
+            skill_name=mutation.proposed_changes.get("name", mutation.failure_cluster),
+            cluster_name=cluster.name,
+            affected_prompts=json.dumps(cluster.affected_prompts[:5]),
+        )
+
+        result = self._llm_json_call(prompt, max_tokens=512, expect_array=True)
+        if result and isinstance(result, list):
+            return [str(p) for p in result[:5]]
+        return cluster.affected_prompts[:3]
+
+    # ------------------------------------------------------------------
+    # Disk verification
+    # ------------------------------------------------------------------
+
+    def _verify_mutation_on_disk(self, mutation: MutationProposal) -> bool:
+        """Verify a mutation was successfully applied by checking disk state."""
+        mt = mutation.mutation_type
+        changes = mutation.proposed_changes
+
+        if mt == "create":
+            name = changes.get("name", f"auto-{mutation.failure_cluster}")
+            skill_md = self.skills_dir / name / "SKILL.md"
+            if not skill_md.exists():
+                log.warning("Created skill %r not found on disk", name)
+                return False
+            content = skill_md.read_text(encoding="utf-8")
+            if len(content) < 50:
+                log.warning("Created skill %r is suspiciously short (%d chars)", name, len(content))
+                return False
+            return True
+
+        elif mt == "update":
+            for skill_name in mutation.target_skills:
+                skill_md = self.skills_dir / skill_name / "SKILL.md"
+                if not skill_md.exists():
+                    log.warning("Updated skill %r not found on disk", skill_name)
+                    return False
+            return True
+
+        elif mt == "delete":
+            for skill_name in mutation.target_skills:
+                skill_dir = self.skills_dir / skill_name
+                if skill_dir.exists():
+                    log.warning("Deleted skill %r still exists on disk", skill_name)
+                    return False
+            return True
+
+        return True
 
     # ------------------------------------------------------------------
     # Helpers

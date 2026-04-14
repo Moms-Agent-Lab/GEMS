@@ -713,18 +713,24 @@ Each skill is a directory with a `SKILL.md` file containing YAML frontmatter.
 | Skill | When activated |
 |---|---|
 | `workflow-builder` | Building from scratch (architecture recipes + slot reference) |
+| `workflow` | Step-by-step image generation with staged tool disclosure |
 | `qwen-image-2512` | Qwen-Image-2512 model (Lightning 4-step pipeline) |
+| `dreamshaper8-lcm` | DreamShaper 8 LCM for fast SD1.5 generation |
+| `explore` | Environment exploration — discover nodes, models, stages |
+| `self-evolve` | Self-evolution protocol for skill mutation lifecycle |
+| `compute` | Resource-aware model selection based on GPU/VRAM |
+| `skill-creator` | Meta-skill for creating new skills from experience |
 | `high-quality` | "high quality", "sharp", "detailed", "8K" |
 | `photorealistic` | "photo", "DSLR", "realistic", "cinematic" |
 | `creative` | "creative", "artistic", "fantasy", "concept art" |
-| `aesthetic-drawing` | "masterpiece", "award-winning", "professional art" |
-| `creative-drawing` | "cool", "dreamy", "futuristic" |
+| `prompt-artist` | Advanced prompt engineering techniques |
 | `lora-enhancement` | Texture / lighting / anatomy defects |
 | `controlnet-control` | Flat background, blurry edges, wrong pose |
 | `regional-control` | Subject–background style bleed |
 | `hires-fix` | Low resolution, soft detail |
 | `spatial` | Multiple objects with spatial relationships |
 | `text-rendering` | Quoted text, signs, labels |
+| `unusual-attributes` | Rare materials, colours, or object properties |
 
 ### Adding custom skills
 
@@ -800,27 +806,52 @@ comfyclaw/
 ├── pyproject.toml
 ├── README.md
 ├── comfyclaw/
-│   ├── __init__.py           Public re-exports
-│   ├── cli.py                CLI entry point (run / serve / dry-run / install-node)
-│   ├── harness.py            ClawHarness — orchestrates the agent loop
-│   ├── agent.py              ClawAgent — LLM tool-use loop (15 tools)
-│   ├── verifier.py           ClawVerifier — vision LLM scoring
-│   ├── human_verifier.py     HumanVerifier + HybridVerifier
-│   ├── workflow.py           WorkflowManager — graph mutations + validation
-│   ├── client.py             ComfyClient — HTTP + polling
-│   ├── memory.py             ClawMemory — per-run attempt history
-│   ├── sync_server.py        SyncServer — bidirectional WebSocket
-│   ├── skill_manager.py      SkillManager — Agent Skills spec loader
-│   ├── custom_node/          Bundled ComfyUI plugin (v4.0)
+│   ├── __init__.py             Public re-exports
+│   ├── cli.py                  CLI entry point (run / serve / dry-run / install-node)
+│   ├── harness.py              ClawHarness — orchestrates the agent loop
+│   ├── agent.py                ClawAgent — LLM tool-use loop (15 tools)
+│   ├── verifier.py             ClawVerifier — vision LLM scoring
+│   ├── human_verifier.py       HumanVerifier + HybridVerifier
+│   ├── workflow.py             WorkflowManager — graph mutations + validation
+│   ├── client.py               ComfyClient — HTTP + polling
+│   ├── memory.py               ClawMemory — per-run attempt history
+│   ├── sync_server.py          SyncServer — bidirectional WebSocket
+│   ├── skill_manager.py        SkillManager — Agent Skills spec loader
+│   ├── evolve.py               SkillEvolver — self-evolution engine
+│   ├── experience_db.py        ExperienceDB — cross-session persistent memory
+│   ├── skill_rag.py            SkillRAG — embedding-based skill retrieval
+│   ├── skill_grounding.py      SkillGrounding — verified mutation acceptance
+│   ├── skill_store.py          SkillStore — version-controlled skill storage
+│   ├── curriculum.py           CurriculumRunner — progressive skill emergence
+│   ├── model_orchestrator.py   ModelOrchestrator — GPU-aware model selection
+│   ├── stage_router.py         StageRouter — stage-gated tool filtering
+│   ├── mdp.py                  MDP formulation for the NeurIPS paper
+│   ├── benchmark/              Benchmark adapters (GenEval2, CREA, OneIG-EN)
+│   │   ├── runner.py           BenchmarkRunner — drives prompt sets
+│   │   ├── ablation.py         AblationRunner — systematic ablation matrix
+│   │   ├── scale_experiment.py ScaleExperiment — 100+ prompt experiments
+│   │   ├── geneval2.py         GenEval2 adapter
+│   │   ├── crea.py             CREA adapter
+│   │   └── oneig.py            OneIG-EN adapter
+│   ├── custom_node/            Bundled ComfyUI plugin (v4.0)
 │   │   ├── __init__.py
 │   │   └── js/
 │   │       └── comfy_claw_sync.js
-│   └── skills/               Built-in skills
-│       ├── workflow-builder/  Architecture recipes
-│       ├── qwen-image-2512/  Qwen model config
-│       ├── photorealistic/   … and 10 more
+│   └── skills/                 Built-in skills (19 skills)
+│       ├── workflow-builder/   Architecture recipes
+│       ├── qwen-image-2512/    Qwen model config
+│       ├── self-evolve/        Self-evolution protocol
+│       ├── explore/            Environment exploration
+│       ├── compute/            Resource-aware model selection
+│       ├── photorealistic/     … and 14 more domain skills
 │       └── ...
-└── tests/                    192 tests (all offline, < 1 s)
+├── experiments/                Benchmark & experiment scripts
+│   ├── README.md
+│   ├── gems_vs_comfyclaw.py    GEMS vs ComfyClaw comparison
+│   ├── claw_benchmark.py       ComfyClaw-only 20-prompt benchmark
+│   ├── claw_qwen_benchmark.py  Qwen Image 2512 benchmark
+│   └── full_experiment.py      Full NeurIPS experiment pipeline
+└── tests/                      192 tests (all offline, < 1 s)
     ├── test_agent.py
     ├── test_harness.py
     ├── test_workflow.py
@@ -828,6 +859,67 @@ comfyclaw/
     ├── test_human_verifier.py
     └── ...
 ```
+
+---
+
+## Self-Evolving Pipeline (NeurIPS)
+
+ComfyClaw implements a **Skill-Augmented Workflow MDP** — a formal framework
+where workflow construction is modelled as a Markov Decision Process with
+stage-gating as action space reduction and skills as reusable macro-actions.
+
+### Pipeline stages
+
+The agent operates within a 7-stage pipeline. At each stage, only the relevant
+tools are exposed (stage-gating), reducing the action space and improving
+reliability:
+
+| Stage | Tools | Purpose |
+|---|---|---|
+| **Loading** | `add_node`, `set_param`, `query_available_models` | Load checkpoints, UNET, CLIP, VAE |
+| **Conditioning** | `add_node`, `set_param`, `connect_nodes` | Build positive/negative prompt encoders |
+| **Sampling** | `add_node`, `set_param`, `connect_nodes` | Configure KSampler, scheduler, CFG |
+| **Enhancement** | `add_lora_loader`, `add_controlnet`, `add_regional_attention` | Add LoRA, ControlNet, regional control |
+| **Refinement** | `add_hires_fix`, `add_inpaint_pass` | Upscaling, inpainting passes |
+| **Decoding** | `add_node`, `connect_nodes` | VAE decode, image post-processing |
+| **Output** | `finalize_workflow` | Save image, validate graph |
+
+### Core modules
+
+| Module | Description |
+|---|---|
+| `SkillEvolver` | Self-evolution engine: benchmark → cluster failures → propose mutations → validate → commit/rollback |
+| `ExperienceDB` | Cross-session SQLite database storing topologies, scores, and lessons for warm-starting |
+| `SkillRAG` | Embedding-based skill retrieval (litellm/sentence-transformers/keyword fallback) |
+| `SkillGrounding` | Verified acceptance of skill mutations against auto-generated test prompts |
+| `CurriculumRunner` | Voyager-style progressive difficulty curriculum for skill emergence |
+| `ModelOrchestrator` | GPU/VRAM-aware two-phase model selection (fast exploration → quality generation) |
+| `StageRouter` | Stage-gated tool filtering — exposes only relevant tools per pipeline stage |
+| `SkillStore` | Version-controlled skill storage with CRUD, rollback, and merge |
+
+### Topology evolution
+
+```
+Iter 1:  base(7 nodes)  → +LoRA         → 8 nodes   score=0.52
+Iter 2:  8-node snapshot → +ControlNet  → 11 nodes  score=0.74
+Iter 3:  11-node snapshot → +hires-fix  → 14 nodes  score=0.91 ✅
+```
+
+When `baseline_first=True` is set, the harness generates from the unmodified
+base workflow first (iteration 0), establishing a guaranteed baseline score
+before the agent begins topology evolution.
+
+### Experiments
+
+See [`experiments/README.md`](experiments/README.md) for benchmark scripts.
+
+Key results on GenEval2 (10-prompt subset):
+
+| System | Mean Score | Speed |
+|---|---|---|
+| **GEMS** (prompt-only refinement) | 0.617 | ~15s/prompt |
+| **ComfyClaw + DreamShaper** (SD1.5, topology evolution) | 0.591 | ~420s/prompt |
+| **ComfyClaw + Qwen Image 2512** (topology + prompt tuning) | 0.904 | ~293s/prompt |
 
 ---
 
