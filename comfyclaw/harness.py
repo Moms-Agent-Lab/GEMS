@@ -233,6 +233,7 @@ class ClawHarness:
         )
         self._agent.on_agent_event = self._on_agent_event
         self._current_iteration = 0
+        self._sft_traces: list[dict] = []
 
         vlm_verifier = ClawVerifier(
             api_key=config.api_key,
@@ -309,6 +310,7 @@ class ClawHarness:
         print(f"{'=' * 60}")
 
         self._memory.clear()
+        self._sft_traces = []
         self._evolution_log = EvolutionLog()
         best_image: bytes | None = None
         best_score = -1.0
@@ -428,12 +430,18 @@ class ClawHarness:
             memory_summary = "\n\n".join(memory_parts) if memory_parts else None
 
             print("[ClawHarness] 🤖 Agent is evolving the workflow…")
+            wf_before_snapshot = copy.deepcopy(wm.to_dict())
             rationale = self._agent.plan_and_patch(
                 workflow_manager=wm,
                 original_prompt=prompt,
                 verifier_feedback=verifier_feedback,
                 memory_summary=memory_summary,
                 iteration=iteration,
+            )
+            self._capture_sft_trace(
+                prompt, iteration, "evolution",
+                workflow_before=wf_before_snapshot,
+                workflow_after=wm.to_dict(),
             )
 
             node_ids_after = set(wm.workflow.keys())
@@ -518,11 +526,17 @@ class ClawHarness:
                 # On repair rounds let the agent fix the workflow in-place.
                 if repair_round > 0:
                     repair_feedback = self._build_repair_feedback(submission_error, last_result)
+                    wf_pre_repair = copy.deepcopy(wm.to_dict())
                     self._agent.plan_and_patch(
                         workflow_manager=wm,
                         original_prompt=prompt,
                         verifier_feedback=repair_feedback,
                         iteration=iteration,
+                    )
+                    self._capture_sft_trace(
+                        prompt, iteration, f"submission_repair_{repair_round}",
+                        workflow_before=wf_pre_repair,
+                        workflow_after=wm.to_dict(),
                     )
                     if cfg.image_model:
                         wm.apply_image_model(cfg.image_model)
@@ -649,11 +663,17 @@ class ClawHarness:
                         repair_feedback = self._build_repair_feedback(
                             exec_submission_error, last_result
                         )
+                        wf_pre_exec_repair = copy.deepcopy(wm.to_dict())
                         self._agent.plan_and_patch(
                             workflow_manager=wm,
                             original_prompt=prompt,
                             verifier_feedback=repair_feedback,
                             iteration=iteration,
+                        )
+                        self._capture_sft_trace(
+                            prompt, iteration, f"execution_repair_{repair_round}",
+                            workflow_before=wf_pre_exec_repair,
+                            workflow_after=wm.to_dict(),
                         )
                         if cfg.image_model:
                             wm.apply_image_model(cfg.image_model)
@@ -746,6 +766,13 @@ class ClawHarness:
             evo.verifier_score = result.score
             self._evolution_log.record(evo)
 
+            # Annotate SFT traces from this iteration with the verifier outcome
+            for trace in self._sft_traces:
+                if trace["iteration"] == iteration and "verifier_score" not in trace:
+                    trace["verifier_score"] = result.score
+                    trace["passed"] = result.passed
+                    trace["failed"] = result.failed
+
             # ── Record in memory ──────────────────────────────────────────
             experience = self._summarize_experience(prompt, result.passed, result.failed, rationale)
             self._memory.record(
@@ -783,6 +810,29 @@ class ClawHarness:
     # ------------------------------------------------------------------
     # Callbacks & helpers
     # ------------------------------------------------------------------
+
+    def _capture_sft_trace(
+        self,
+        prompt: str,
+        iteration: int,
+        trace_type: str,
+        workflow_before: dict | None = None,
+        workflow_after: dict | None = None,
+    ) -> None:
+        """Snapshot the agent's last conversation for SFT data collection."""
+        msgs = self._agent.last_messages
+        if not msgs:
+            return
+        self._sft_traces.append({
+            "prompt": prompt,
+            "iteration": iteration,
+            "type": trace_type,
+            "model": self.config.model,
+            "messages": msgs,
+            "token_usage": self._agent.last_token_usage,
+            "workflow_before": workflow_before,
+            "workflow_after": workflow_after,
+        })
 
     def _emit_status(self, state: str, iteration: int = 0, detail: str = "") -> None:
         if self.on_status:
@@ -917,6 +967,11 @@ class ClawHarness:
     @property
     def memory(self) -> ClawMemory:
         return self._memory
+
+    @property
+    def sft_traces(self) -> list[dict]:
+        """Full agent conversation traces for SFT data collection."""
+        return self._sft_traces
 
     # ------------------------------------------------------------------
     # Factory methods

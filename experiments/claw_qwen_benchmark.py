@@ -405,6 +405,15 @@ def run_one(prompt: str, idx: int) -> dict:
 
     error_data = _collect_error_data(harness)
 
+    # ── Save SFT conversation traces ─────────────────────────────────
+    sft_traces = harness.sft_traces
+    if sft_traces:
+        sft_path = os.path.join(prompt_dir, "sft_traces.jsonl")
+        with open(sft_path, "w", encoding="utf-8") as f:
+            for trace in sft_traces:
+                f.write(json.dumps(trace, default=str, ensure_ascii=False) + "\n")
+        log.info("  Saved %d SFT trace(s) to %s", len(sft_traces), sft_path)
+
     return {
         "idx": idx,
         "prompt": prompt,
@@ -417,6 +426,7 @@ def run_one(prompt: str, idx: int) -> dict:
         "iterations": len(harness.evolution_log.entries),
         "image_path": img_path,
         "error_data": error_data,
+        "sft_trace_count": len(sft_traces),
     }
 
 
@@ -625,6 +635,22 @@ def main():
 
     log.info("Results saved to %s", RESULTS_PATH)
     log.info("Detailed results in %s", DETAILED_DIR)
+
+    # ── Aggregate SFT traces into one training file ───────────────────
+    sft_all_path = os.path.join(OUTPUT_DIR, "sft_traces_all.jsonl")
+    total_traces = 0
+    with open(sft_all_path, "w", encoding="utf-8") as out_f:
+        for prompt_subdir in sorted(Path(DETAILED_DIR).iterdir()):
+            trace_file = prompt_subdir / "sft_traces.jsonl"
+            if trace_file.is_file():
+                for line in trace_file.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        out_f.write(line + "\n")
+                        total_traces += 1
+    if total_traces > 0:
+        log.info("Aggregated %d SFT traces into %s", total_traces, sft_all_path)
+    else:
+        log.info("No SFT traces to aggregate")
 
 
 if __name__ == "__main__":

@@ -579,6 +579,10 @@ class ClawAgent:
         self.pinned_image_model = pinned_image_model
         self.stage_router = StageRouter(enabled=stage_gated)
 
+        # SFT trace: populated after each plan_and_patch() call
+        self.last_messages: list[dict] | None = None
+        self.last_token_usage: dict | None = None
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -619,6 +623,7 @@ class ClawAgent:
         ]
         rationale = "(no rationale provided)"
         rounds = 0
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         self.stage_router.reset()
         self._emit_event("info", f"Starting agent loop (model: {self.model})")
@@ -634,6 +639,11 @@ class ClawAgent:
             )
             choice = resp.choices[0]
             finish_reason = choice.finish_reason
+
+            if hasattr(resp, "usage") and resp.usage:
+                total_usage["prompt_tokens"] += getattr(resp.usage, "prompt_tokens", 0) or 0
+                total_usage["completion_tokens"] += getattr(resp.usage, "completion_tokens", 0) or 0
+                total_usage["total_tokens"] += getattr(resp.usage, "total_tokens", 0) or 0
 
             assistant_msg = choice.message
             messages.append(assistant_msg)
@@ -687,6 +697,12 @@ class ClawAgent:
 
             if done:
                 break
+
+        # Persist full conversation trace for SFT data collection.
+        # Messages may contain LiteLLM ModelResponse objects as assistant turns;
+        # serialize them to plain dicts for JSON compatibility.
+        self.last_messages = self._serialize_messages(messages)
+        self.last_token_usage = total_usage
 
         return rationale
 
@@ -1233,6 +1249,39 @@ class ClawAgent:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _serialize_messages(messages: list) -> list[dict]:
+        """Convert a messages list to plain JSON-serializable dicts.
+
+        LiteLLM appends ``ModelResponse.choices[0].message`` objects directly,
+        which carry tool_calls as pydantic-like objects.  This method converts
+        every message to a plain dict so the trace can be written to JSON/JSONL.
+        """
+        out: list[dict] = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                out.append(msg)
+                continue
+            # LiteLLM Message / ChatCompletionMessage objects
+            d: dict = {"role": getattr(msg, "role", "assistant")}
+            if getattr(msg, "content", None):
+                d["content"] = msg.content
+            tcs = getattr(msg, "tool_calls", None)
+            if tcs:
+                d["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in tcs
+                ]
+            out.append(d)
+        return out
 
     def _notify(self, wm: WorkflowManager) -> None:
         if self.on_change:
