@@ -375,7 +375,23 @@ def run_one(prompt: str, idx: int) -> dict:
             "node_count_after": evo.node_count_after if evo else None,
             "nodes_added": evo.node_ids_added if evo else None,
             "repair_history": evo.repair_history if evo else [],
+            "timing": {
+                "agent_s": evo.agent_time_s,
+                "generation_s": evo.generation_time_s,
+                "verify_s": evo.verify_time_s,
+                "repair_s": evo.repair_time_s,
+            } if evo else None,
         })
+
+    # Aggregate timing across all iterations
+    evo_entries = harness.evolution_log.entries
+    timing_summary = {
+        "total_s": round(elapsed, 1),
+        "agent_s": round(sum(e.agent_time_s for e in evo_entries), 2),
+        "generation_s": round(sum(e.generation_time_s for e in evo_entries), 2),
+        "verify_s": round(sum(e.verify_time_s for e in evo_entries), 2),
+        "repair_s": round(sum(e.repair_time_s for e in evo_entries), 2),
+    }
 
     detail_json = {
         "idx": idx,
@@ -388,6 +404,7 @@ def run_one(prompt: str, idx: int) -> dict:
         ).iteration if harness.memory.attempts else None,
         "total_iterations": len(harness.evolution_log.entries),
         "elapsed_s": round(elapsed, 1),
+        "timing": timing_summary,
         "final_node_count": node_count,
         "config": {
             "model": "Qwen Image 2512 (BF16)",

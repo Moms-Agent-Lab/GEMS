@@ -134,6 +134,10 @@ class EvolutionEntry:
     rationale: str
     verifier_score: float | None = None
     repair_history: list[dict] = field(default_factory=list)
+    agent_time_s: float = 0.0
+    generation_time_s: float = 0.0
+    verify_time_s: float = 0.0
+    repair_time_s: float = 0.0
 
     def summary(self) -> str:
         diff = self.node_count_after - self.node_count_before
@@ -141,7 +145,9 @@ class EvolutionEntry:
         added = ", ".join(self.node_ids_added) or "none"
         return (
             f"  Iter {self.iteration}: nodes {self.node_count_before}→{self.node_count_after} "
-            f"({sign}{diff}), added=[{added}], score={self.verifier_score}"
+            f"({sign}{diff}), added=[{added}], score={self.verifier_score} "
+            f"[agent={self.agent_time_s:.1f}s gen={self.generation_time_s:.1f}s "
+            f"verify={self.verify_time_s:.1f}s repair={self.repair_time_s:.1f}s]"
         )
 
 
@@ -430,6 +436,7 @@ class ClawHarness:
             memory_summary = "\n\n".join(memory_parts) if memory_parts else None
 
             print("[ClawHarness] 🤖 Agent is evolving the workflow…")
+            t_agent_start = time.time()
             wf_before_snapshot = copy.deepcopy(wm.to_dict())
             rationale = self._agent.plan_and_patch(
                 workflow_manager=wm,
@@ -438,6 +445,7 @@ class ClawHarness:
                 memory_summary=memory_summary,
                 iteration=iteration,
             )
+            t_agent_elapsed = time.time() - t_agent_start
             self._capture_sft_trace(
                 prompt, iteration, "evolution",
                 workflow_before=wf_before_snapshot,
@@ -452,6 +460,7 @@ class ClawHarness:
                 node_count_after=len(node_ids_after),
                 node_ids_added=added_ids,
                 rationale=rationale,
+                agent_time_s=round(t_agent_elapsed, 2),
             )
             if added_ids:
                 new_classes = [wm.workflow[nid].get("class_type", "?") for nid in added_ids]
@@ -510,6 +519,8 @@ class ClawHarness:
             # the agent gets up to cfg.max_repair_attempts chances to inspect
             # the error message and fix the topology before this iteration is
             # abandoned.
+            t_gen_start = time.time()
+            t_repair_total = 0.0
             prompt_id: str | None = None
             submission_error: str | None = None
 
@@ -527,12 +538,14 @@ class ClawHarness:
                 if repair_round > 0:
                     repair_feedback = self._build_repair_feedback(submission_error, last_result)
                     wf_pre_repair = copy.deepcopy(wm.to_dict())
+                    t_repair_start = time.time()
                     self._agent.plan_and_patch(
                         workflow_manager=wm,
                         original_prompt=prompt,
                         verifier_feedback=repair_feedback,
                         iteration=iteration,
                     )
+                    t_repair_total += time.time() - t_repair_start
                     self._capture_sft_trace(
                         prompt, iteration, f"submission_repair_{repair_round}",
                         workflow_before=wf_pre_repair,
@@ -664,12 +677,14 @@ class ClawHarness:
                             exec_submission_error, last_result
                         )
                         wf_pre_exec_repair = copy.deepcopy(wm.to_dict())
+                        t_repair_start = time.time()
                         self._agent.plan_and_patch(
                             workflow_manager=wm,
                             original_prompt=prompt,
                             verifier_feedback=repair_feedback,
                             iteration=iteration,
                         )
+                        t_repair_total += time.time() - t_repair_start
                         self._capture_sft_trace(
                             prompt, iteration, f"execution_repair_{repair_round}",
                             workflow_before=wf_pre_exec_repair,
@@ -742,8 +757,11 @@ class ClawHarness:
                         continue
 
             images = self._client.collect_images(history)
+            t_gen_elapsed = time.time() - t_gen_start
             if not images:
                 print("[ClawHarness] ⚠  No images in output — check workflow.")
+                evo.generation_time_s = round(t_gen_elapsed, 2)
+                evo.repair_time_s = round(t_repair_total, 2)
                 self._evolution_log.record(evo)
                 continue
 
@@ -753,7 +771,9 @@ class ClawHarness:
             # ── Verify ────────────────────────────────────────────────────
             print("[ClawHarness] 🔍 Verifying image…")
             self._emit_status("verifying", iteration, "Verifying image…")
+            t_verify_start = time.time()
             result = self._verifier.verify(image_bytes, prompt, iteration=iteration)
+            t_verify_elapsed = time.time() - t_verify_start
             last_result = result
             print(f"[ClawHarness] Score: {result.score:.2f}")
             print(result.format_feedback())
@@ -764,6 +784,9 @@ class ClawHarness:
                 best_workflow_snapshot = wm.to_dict()
 
             evo.verifier_score = result.score
+            evo.generation_time_s = round(t_gen_elapsed, 2)
+            evo.verify_time_s = round(t_verify_elapsed, 2)
+            evo.repair_time_s = round(t_repair_total, 2)
             self._evolution_log.record(evo)
 
             # Annotate SFT traces from this iteration with the verifier outcome
