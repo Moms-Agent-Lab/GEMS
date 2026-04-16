@@ -149,6 +149,18 @@ python eval/GenEval2.py \
 
 Set `gen_url` and `mllm_url` at the top of `eval/GenEval2.py` before running.
 
+**Score GenEval2 results** (requires [Qwen3-VL-8B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct)):
+
+```bash
+python eval/GenEval2_data/evaluation.py \
+    --benchmark_data eval/GenEval2_data/geneval2_data.jsonl \
+    --image_filepath_data eval/GenEval2_data/results/my_run/image_paths.json \
+    --method soft_tifa_am \
+    --output_file eval/GenEval2_data/results/my_run/scores.json
+```
+
+Available methods: `vqascore`, `tifa`, `soft_tifa_am`, `soft_tifa_gm`.
+
 **CREA:**
 
 ```bash

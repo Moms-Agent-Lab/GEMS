@@ -12,11 +12,12 @@ parser.add_argument("--max_iterations", type=int, default=5)
 parser.add_argument("--max_nodes", type=int, default=5)
 args = parser.parse_args()
 
-NUM_WORKERS = 256
-DATA_PATH = "path/to/GenEval2/geneval2_data.jsonl"
-OUTPUT_DIR = os.path.join("path/to/GenEval2/results", args.name)
+NUM_WORKERS = 2
+DATA_PATH = "eval/GenEval2_data/geneval2_data.jsonl"
+OUTPUT_DIR = os.path.join("eval/GenEval2_data/results", args.name)
+TRACE_DIR = os.path.join("eval/GenEval2_data/results", args.name + "_traces")
 MAPPING_FILE = os.path.join(OUTPUT_DIR, "image_paths.json")
-gen_url = "" 
+gen_url = "http://localhost:8000/generate"
 mllm_url = ""
 max_iterations = args.max_iterations
 
@@ -29,14 +30,29 @@ def agent_worker(rank, jobs, return_dict):
     for global_idx, item in pbar:
         try:
             prompt = item['prompt']
-            img_data = agent.run(item)
-            
+            result = agent.run_with_trace(item)
+
             img_name = f"img_idx_{global_idx:05d}.png" 
             img_path = os.path.join(OUTPUT_DIR, img_name)
-            
             with open(img_path, "wb") as f:
-                f.write(img_data)
-            
+                f.write(result["best_image"])
+
+            prompt_dir = os.path.join(TRACE_DIR, f"prompt_{global_idx:05d}")
+            os.makedirs(prompt_dir, exist_ok=True)
+
+            for round_idx, img_bytes in enumerate(result["all_images"], start=1):
+                round_img_path = os.path.join(prompt_dir, f"round_{round_idx}.png")
+                with open(round_img_path, "wb") as f:
+                    f.write(img_bytes)
+
+            best_img_path = os.path.join(prompt_dir, "best.png")
+            with open(best_img_path, "wb") as f:
+                f.write(result["best_image"])
+
+            trace_path = os.path.join(prompt_dir, "trace.json")
+            with open(trace_path, "w", encoding="utf-8") as f:
+                json.dump(result["trace"], f, indent=2, ensure_ascii=False)
+
             local_mapping[prompt] = img_path
         except Exception as e:
             print(f"\nWorker {rank} error processing item {global_idx}: {e}")
@@ -45,6 +61,7 @@ def agent_worker(rank, jobs, return_dict):
 
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(TRACE_DIR, exist_ok=True)
     
     all_data_with_ids = []
     with open(DATA_PATH, 'r', encoding='utf-8') as f:

@@ -132,48 +132,101 @@ class GEMS(BaseAgent):
         return original_prompt
 
     def run(self, item: dict) -> bytes:
+        result = self.run_with_trace(item)
+        return result["best_image"]
+
+    def run_with_trace(self, item: dict) -> dict:
         original_prompt = item.get("prompt", "")
-        
+        trace = {
+            "original_prompt": original_prompt,
+            "skill_triggered": None,
+            "enhanced_prompt": None,
+            "questions": [],
+            "rounds": [],
+            "best_round": None,
+            "total_rounds": 0,
+            "success": False,
+        }
+
         print(f"\n[Step 0] Skill Routing and Planning...")
         current_prompt = self.plan(original_prompt)
-        
+
         if current_prompt != original_prompt:
             current_thought = "Initial submission enhanced by specialized skill instructions."
+            trace["skill_triggered"] = True
+            trace["enhanced_prompt"] = current_prompt
         else:
             current_thought = "Initial submission based on original prompt."
-        
+            trace["skill_triggered"] = False
+
         print(f"\n[Step 1] Decomposing requirements...")
 
         questions = self.decompose(original_prompt)
-        
+        trace["questions"] = questions
+
         if not questions:
-            return self.generate(original_prompt)
+            img = self.generate(original_prompt)
+            trace["total_rounds"] = 1
+            trace["success"] = True
+            trace["best_round"] = 1
+            trace["rounds"].append({
+                "round": 1,
+                "prompt": original_prompt,
+                "verifications": [],
+                "passed": [],
+                "failed": [],
+                "experience": None,
+                "thought": current_thought,
+                "is_best": True,
+            })
+            return {"best_image": img, "all_images": [img], "trace": trace}
 
         attempt_history = []
         best_image_bytes = None
         max_passed_count = -1
-        
+        all_images = []
+        best_round_idx = 0
+
         for i in range(1, self.max_iterations + 1):
             print(f"\n--- Round {i}/{self.max_iterations} ---")
-            
+
             final_image_bytes = self.generate(current_prompt)
-            
+            all_images.append(final_image_bytes)
+
             verifications = self.verify_image(final_image_bytes, questions)
             failed_questions = [v['question'] for v in verifications if not v['passed']]
             passed_questions = [v['question'] for v in verifications if v['passed']]
 
             current_passed_count = len(passed_questions)
-            if current_passed_count > max_passed_count:
+            is_new_best = current_passed_count > max_passed_count
+            if is_new_best:
                 max_passed_count = current_passed_count
                 best_image_bytes = final_image_bytes
+                best_round_idx = i
                 print(f" [Updating best solution] Current passed: {max_passed_count}/{len(questions)}")
-                
+
             for v in verifications:
                 print(f"  {'✅' if v['passed'] else '❌'} {v['question']}")
 
+            round_info = {
+                "round": i,
+                "prompt": current_prompt,
+                "verifications": [{"question": v["question"], "answer": v["answer"], "passed": v["passed"]} for v in verifications],
+                "passed": passed_questions,
+                "failed": failed_questions,
+                "experience": None,
+                "thought": current_thought,
+                "is_best": is_new_best,
+            }
+
             if not failed_questions:
                 print(f"\nSuccess: All requirements met!")
-                return final_image_bytes
+                round_info["is_best"] = True
+                trace["rounds"].append(round_info)
+                trace["total_rounds"] = i
+                trace["best_round"] = i
+                trace["success"] = True
+                return {"best_image": final_image_bytes, "all_images": all_images, "trace": trace}
 
             if i < self.max_iterations:
                 print(f" [Extracting experience] Compressing Thought into Experience...")
@@ -191,25 +244,26 @@ class GEMS(BaseAgent):
 
                 current_experience = self.think(summarize_task, images=[final_image_bytes]).strip()
                 print(f" Current round experience: {current_experience}")
+                round_info["experience"] = current_experience
 
                 attempt_history.append({
                     "iteration": i,
                     "prompt": current_prompt,
-                    "experience": current_experience, 
+                    "experience": current_experience,
                     "failed": failed_questions,
                     "passed": passed_questions,
                     "image_bytes": final_image_bytes
                 })
 
                 print(f"Optimizing prompt based on historical images...")
-                
+
                 history_log_str = ""
                 history_images = []
-                
+
                 for record in attempt_history:
                     history_log_str += (
                         f"Attempt {record['iteration']}:\n"
-                        f"- Experience: {record['experience']}\n" 
+                        f"- Experience: {record['experience']}\n"
                         f"- Prompt: {record['prompt']}\n"
                         f"- Image Result: <image>\n"
                         f"- Failed Points: {', '.join(record['failed']) if record['failed'] else 'None'}\n\n"
@@ -220,7 +274,7 @@ class GEMS(BaseAgent):
                     original_prompt=original_prompt,
                     history_log=history_log_str
                 )
-                
+
                 current_prompt, current_thought = self.think_with_thought(refine_task, images=history_images)
                 current_prompt = current_prompt.strip()
                 print(f"Newly generated Prompt: {current_prompt}")
@@ -228,5 +282,9 @@ class GEMS(BaseAgent):
             else:
                 print(f"Maximum iterations reached.")
 
+            trace["rounds"].append(round_info)
+
+        trace["total_rounds"] = self.max_iterations
+        trace["best_round"] = best_round_idx
         print(f"Returning the best image from iterations (Passed: {max_passed_count}/{len(questions)}).")
-        return best_image_bytes
+        return {"best_image": best_image_bytes, "all_images": all_images, "trace": trace}

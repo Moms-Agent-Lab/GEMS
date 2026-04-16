@@ -67,7 +67,7 @@ async def generate_image(prompt: str):
     input_queue.put((task_id, prompt))
     
     start_time = time.time()
-    timeout = 120
+    timeout = 600
     
     while task_id not in result_dict:
         if time.time() - start_time > timeout:
