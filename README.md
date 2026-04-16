@@ -366,10 +366,25 @@ git clone https://github.com/facebookresearch/GenEval2.git /path/to/GenEval2
 ```
 
 Set `DATA_PATH`, `OUTPUT_DIR`, `gen_url`, `mllm_url` at the top of
-`eval/GenEval2.py`, then:
+`eval/GenEval2.py`, then pick a backend via `--agent`:
 
 ```bash
+# HTTP line (unchanged; NUM_WORKERS=2, reads gen_url at top of file)
 python eval/GenEval2.py --name my_run --agent gems --max_iterations 5
+
+# ComfyUI line, single ComfyUI server × 2 client workers
+python eval/GenEval2.py \
+    --name my_run_comfy --agent comfygems \
+    --model z-image-turbo \
+    --comfyui_servers 127.0.0.1:8188 \
+    --workers_per_server 2 \
+    --max_iterations 5
+
+# ComfyUI line, fan out across 4 ComfyUI servers (one worker each)
+python eval/GenEval2.py \
+    --name my_run_multi --agent comfygems \
+    --model qwen-image-2512 \
+    --comfyui_servers host1:8188,host2:8188,host3:8188,host4:8188
 ```
 
 ### CREA
