@@ -13,54 +13,60 @@
 
 </div>
 
+## Contents
 
-### Project Overview
+- [Project Overview](#project-overview)
+- [Quick Start](#quick-start)
+- [Setup — MLLM (shared by both lines)](#setup--mllm-shared-by-both-lines)
+- [Line 1 — HTTP Generation (`infer.py`)](#line-1--http-generation-inferpy)
+- [Line 2 — ComfyUI Generation (`infer_comfy.py`)](#line-2--comfyui-generation-infer_comfypy)
+- [Evaluation](#evaluation)
+- [Skills](#skills)
+- [Citation](#citation)
 
-GEMS ships with two interchangeable image-generation lines — both share
-the same decompose / verify / refine / skill-routing pipeline, only the
-`generate()` backend differs:
+---
 
-1. **HTTP line** (`agent/GEMS.py` + `infer.py`) — POSTs the prompt to a
-   dedicated FastAPI server (`qwen_image.py` / `z_image.py`).
-2. **ComfyUI line** (`agent/comfy_gems.py` + `infer_comfy.py`) — builds
-   a full ComfyUI API-format workflow for the chosen model (Qwen-Image-2512,
-   Z-Image-Turbo, FLUX.2 [klein] 9B, or LongCat-Image) and submits it
-   to a running ComfyUI server. See [Infer (ComfyUI line)](#infer-comfyui-line).
+## Project Overview
+
+GEMS ships with **two interchangeable image-generation lines**. Both share the same
+decompose → generate → verify → refine pipeline and the same `SkillManager` / planner;
+only the `generate()` backend differs.
+
+| Line | Entry | Backend | Supported generators |
+|---|---|---|---|
+| **HTTP line** | `infer.py` | `agent/GEMS.py` → FastAPI server (`POST /generate?prompt=…`) | Qwen-Image-2512, Z-Image-Turbo |
+| **ComfyUI line** | `infer_comfy.py` | `agent/comfy_gems.py` → ComfyUI REST API (`/prompt`, `/history`, `/view`) | Qwen-Image-2512, Z-Image-Turbo, FLUX.2 [klein] 9B, LongCat-Image |
 
 ```text
 GEMS/
 ├── agent/
-│   ├── server/                 # start server
-│   │   ├── kimi.sh             # Kimi-K2.5
-│   │   ├── qwen_image.py       # Qwen-Image-2512
-│   │   └── z_image.py          # Z-Image-Turbo
-│   ├── skills/
-│   │   ├── aesthetic_drawing
-│   │   │   └── SKILL.md
-│   │   ├── creative_drawing
-│   │   │   └── SKILL.md
-│   │   ├── qwen-image-2512     # ComfyUI model skills
-│   │   ├── z-image-turbo
-│   │   ├── flux-klein-9b
-│   │   ├── longcat-image
-│   │   └── ...
-│   ├── base_agent.py           # base Interfaces
-│   ├── GEMS.py                 # core implementation (HTTP line)
-│   ├── comfy_gems.py           # ComfyUI line (inherits GEMS)
-│   ├── comfy_client.py         # ComfyUI HTTP client
-│   └── comfy_workflow.py       # ComfyUI workflow templates
-├── eval/                       # evalation for tasks
-│   ├── ArtiMuse/
-│   ├── CREA/
-│   ├── GenEval2.py
-│   └── ...
-├── infer.py                    # HTTP line demo
-├── infer_comfy.py              # ComfyUI line demo
-└── ...
+│   ├── server/                 # FastAPI image-gen servers (HTTP line)
+│   │   ├── kimi.sh             # Kimi-K2.5 MLLM
+│   │   ├── qwen_image.py       # Qwen-Image-2512 server
+│   │   └── z_image.py          # Z-Image-Turbo server
+│   ├── skills/                 # prompt-routing skills
+│   │   ├── aesthetic_drawing/  #   legacy GEMS skills
+│   │   ├── creative_drawing/
+│   │   ├── spatial/
+│   │   ├── text_rendering/
+│   │   ├── qwen-image-2512/    #   ComfyUI model skills
+│   │   ├── z-image-turbo/
+│   │   ├── flux-klein-9b/
+│   │   └── longcat-image/
+│   ├── base_agent.py           # BaseAgent + LiteLLM config
+│   ├── GEMS.py                 # pipeline (HTTP line)
+│   ├── comfy_gems.py           # ComfyGEMS subclass (ComfyUI line)
+│   ├── comfy_client.py         # minimal ComfyUI HTTP client
+│   ├── comfy_workflow.py       # ComfyUI API-format templates
+│   └── skill_manager.py        # loads SKILL.md (both formats)
+├── eval/                       # GenEval2, CREA, ArtiMuse
+├── infer.py                    # HTTP-line demo
+└── infer_comfy.py              # ComfyUI-line demo
 ```
 
+---
 
-### Quick Start
+## Quick Start
 
 ```bash
 git clone https://github.com/lcqysl/GEMS.git
@@ -68,152 +74,175 @@ cd GEMS
 pip install requests litellm torch diffusers transformers fastapi uvicorn accelerate tqdm
 ```
 
+Additional requirement for the ComfyUI line: a separate ComfyUI installation reachable
+over HTTP (see [Line 2](#line-2--comfyui-generation-infer_comfypy)).
+
 ---
 
-### Setup: MLLM
+## Setup — MLLM (shared by both lines)
 
-GEMS uses an MLLM for reasoning, verification, and prompt refinement. Two options:
+GEMS uses an MLLM for reasoning, verification, and prompt refinement. Pick one option.
 
-#### Option A — Cloud API via LiteLLM (recommended)
+### Option A — Cloud API via LiteLLM (recommended)
 
-Supports Claude, GPT-4o, Gemini, and [any model LiteLLM covers](https://docs.litellm.ai/docs/providers). The default config uses **Claude Sonnet 4.6**.
+Supports Claude, GPT-4o, Gemini, and [any model LiteLLM covers](https://docs.litellm.ai/docs/providers).
+The default config uses **Claude Sonnet 4.6**.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 The model is set in `agent/base_agent.py`:
+
 ```python
 LITELLM_MODEL = "anthropic/claude-sonnet-4-6"
 ```
+
 Change this to switch providers (e.g. `"openai/gpt-4o"`, `"gemini/gemini-2.0-flash"`).
 
-#### Option B — Self-hosted via SGLang
+### Option B — Self-hosted via SGLang
 
-To run [Kimi-K2.5](https://huggingface.co/moonshotai/Kimi-K2.5) locally (requires 8× GPU):
+Run [Kimi-K2.5](https://huggingface.co/moonshotai/Kimi-K2.5) locally (requires 8× GPU):
 
 ```bash
 pip install sglang
-
 MODEL_PATH=/path/to/Kimi-K2.5 bash agent/server/kimi.sh
-# Starts on http://localhost:30000
+# starts on http://localhost:30000
 ```
 
-Then set `mllm_url` in `infer.py` and switch `base_agent.py` back to using the OpenAI-compatible client.
+Then set `mllm_url` in `infer.py` and switch `base_agent.py` back to the
+OpenAI-compatible client.
 
 ---
 
-### Setup: Image Generation Server
+## Line 1 — HTTP Generation (`infer.py`)
 
-GEMS supports [Qwen-Image-2512](https://huggingface.co/Qwen/Qwen-Image-2512) and [Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo) as generators.
+Uses a dedicated FastAPI server to serve a single model.
 
-**Download model weights:**
+### 1. Download the generator weights
 
 ```bash
 # Qwen-Image-2512
 huggingface-cli download Qwen/Qwen-Image-2512 --local-dir /path/to/Qwen-Image-2512
 
-# Z-Image-Turbo (faster alternative)
+# Z-Image-Turbo (faster, ~9 steps)
 huggingface-cli download Tongyi-MAI/Z-Image-Turbo --local-dir /path/to/Z-Image-Turbo
 ```
 
-**Start the Qwen-Image server:**
+### 2. Start the image-generation server
+
+**Qwen-Image:**
 
 ```bash
 MODEL_PATH=/path/to/Qwen-Image-2512 NUM_GPUS=1 python agent/server/qwen_image.py
-# Starts on http://localhost:8000
+# http://localhost:8000
 ```
 
-- `NUM_GPUS`: number of GPUs to use (default: 1). Each GPU runs an independent worker; requests are load-balanced across them.
-- `MODEL_PATH`: local path to the downloaded model weights.
+- `NUM_GPUS` — number of GPU workers (load-balanced).
+- `MODEL_PATH` — local weights dir.
 
-**Start the Z-Image-Turbo server** (faster, 9 steps vs 50):
+**Z-Image-Turbo** (faster, 9 steps vs 50):
 
 ```bash
 MODEL_PATH=/path/to/Z-Image-Turbo NUM_GPUS=1 PORT=8000 python agent/server/z_image.py
-# Starts on http://localhost:8000 (default port: 8001)
+# http://localhost:8000 (default port is 8001)
 ```
 
-**Verify the server is running:**
+Verify:
 
 ```bash
 curl -X POST "http://localhost:8000/generate?prompt=a+cat+on+a+rooftop" --output test.png
 ```
 
----
+### 3. Run inference
 
-### Infer
-
-Edit `infer.py` to set your image generation server URL, then run:
+Edit `infer.py`:
 
 ```python
-# infer.py
-gen_url = "http://localhost:8000/generate"   # Qwen-Image (port 8000) or Z-Image-Turbo (port 8001)
+gen_url        = "http://localhost:8000/generate"
 max_iterations = 5
 ```
 
+Then:
+
 ```bash
 python infer.py
+# → infer_results/test_output.png
 ```
 
-Output is saved to `infer_results/test_output.png`.
-
-**How it works:** GEMS decomposes the prompt into verification questions, generates an image, checks each requirement, and iteratively refines the prompt based on failures — repeating up to `max_iterations` rounds.
+GEMS decomposes the prompt into verification questions, generates an image, checks
+each requirement, and iteratively refines the prompt based on failures — repeating
+up to `max_iterations` rounds.
 
 ---
 
-### Infer (ComfyUI line)
+## Line 2 — ComfyUI Generation (`infer_comfy.py`)
 
-GEMS ships a second generation line that produces **ComfyUI API-format
-workflows** and submits them to a running ComfyUI server.  The
-decompose → generate → verify → refine loop from the HTTP line is
-preserved verbatim (inherited from `GEMS`) — only `generate()` is
-replaced: instead of `POST /generate?prompt=...` it builds a full
-workflow dict, submits to ComfyUI's `/prompt`, polls `/history`, and
-downloads the output via `/view`.
+Produces **ComfyUI API-format workflows** and submits them to a running ComfyUI
+server. The decompose / verify / refine loop is inherited verbatim from `GEMS`;
+only `generate()` is replaced — it builds a workflow dict, submits to
+`/prompt`, polls `/history`, and fetches the output via `/view`.
 
-**Supported models (one base-workflow template each):**
+### Supported models
 
-| Model | `model=` value | Topology highlights |
-|---|---|---|
-| Qwen-Image-2512 | `qwen-image-2512` | 20B MMDiT, FP8; `ModelSamplingAuraFlow` → `KSampler` (steps=50, cfg=4.0, euler/simple); 1328×1328 |
-| Z-Image-Turbo | `z-image-turbo` | 6B S3-DiT, BF16; `ConditioningZeroOut` for negatives; `KSampler` (steps=8, cfg=1, res_multistep); 1024×1024 |
-| FLUX.2 [klein] 9B | `flux-klein-9b` | `SamplerCustomAdvanced` + `CFGGuider` + `Flux2Scheduler` + `RandomNoise` + `KSamplerSelect`; 4 steps; 1024×1024 |
-| LongCat-Image | `longcat-image` | 6B DiT, BF16; `FluxGuidance` on both positive/negative + `CFGNorm`; `KSampler` (steps=20, cfg=4); 1024×1024 |
+| Model | `model=` value | Template highlights | Default size |
+|---|---|---|---|
+| Qwen-Image-2512 | `qwen-image-2512` | 20B MMDiT FP8 · `ModelSamplingAuraFlow` → `KSampler` (steps=50, cfg=4.0, euler/simple) | 1328×1328 |
+| Z-Image-Turbo | `z-image-turbo` | 6B S3-DiT BF16 · `ConditioningZeroOut` on negatives · `KSampler` (steps=8, cfg=1, res_multistep) | 1024×1024 |
+| FLUX.2 [klein] 9B | `flux-klein-9b` | `SamplerCustomAdvanced` + `CFGGuider` + `Flux2Scheduler` + `RandomNoise` + `KSamplerSelect` (4 steps) | 1024×1024 |
+| LongCat-Image | `longcat-image` | 6B DiT BF16 · `FluxGuidance` on both conds + `CFGNorm` · `KSampler` (steps=20, cfg=4) | 1024×1024 |
 
 Each model has a corresponding `SKILL.md` under `agent/skills/<model>/`
-(imported as-is from `comfyclaw`, YAML-frontmatter format) so the
-`SkillManager` / `plan()` step can route the user's prompt through the
-model's own recipe.
+(imported as-is from `comfyclaw`, YAML-frontmatter format) so the planner
+can route the user's prompt through the model's own recipe.
 
-**Prerequisites:**
+### 1. Install and start ComfyUI
 
-* A reachable ComfyUI server (version with the right custom nodes; we
-  tested against ComfyUI 0.19+ with native `QwenImage*` / `FluxGuidance`
-  / `CFGNorm` / `Flux2Scheduler` support).
-* Model weights / text encoders / VAE for the chosen model installed at
-  the standard `ComfyUI/models/...` paths — the exact filenames expected
-  by each workflow template are listed in the corresponding
-  `agent/skills/<model>/SKILL.md`.
-* `ANTHROPIC_API_KEY` (or any other LiteLLM-supported provider, see
-  `agent/base_agent.py`) for the MLLM used by decompose / verify /
-  refine.
+```bash
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI && pip install -r requirements.txt
+python main.py --listen 127.0.0.1 --port 8188
+```
 
-**Quick run:**
+ComfyUI must be recent enough to provide `QwenImage*`, `FluxGuidance`, `CFGNorm`,
+`Flux2Scheduler`, and `ModelSamplingAuraFlow` as built-in nodes (ComfyUI ≥ 0.19).
+
+### 2. Place the model weights
+
+Drop each file under the matching folder in your ComfyUI installation. Filenames
+are **hard-coded in `agent/comfy_workflow.py`** and must match exactly:
+
+| Model | `ComfyUI/models/unet/` | `ComfyUI/models/text_encoders/` (or `clip/`) | `ComfyUI/models/vae/` |
+|---|---|---|---|
+| `qwen-image-2512` | `qwen_image_2512_fp8_e4m3fn.safetensors` | `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `qwen_image_vae.safetensors` |
+| `z-image-turbo` | `z_image_turbo_bf16.safetensors` | `qwen_3_4b.safetensors` | `ae.safetensors` |
+| `longcat-image` | `longcat_image_bf16.safetensors` | `qwen_2.5_vl_7b.safetensors` | `ae.safetensors` |
+| `flux-klein-9b` | `flux-2-klein-9b.safetensors` | `qwen_3_8b_fp8mixed.safetensors` | `flux2-vae.safetensors` |
+
+If you need different filenames, either symlink them to the names above, or edit
+the corresponding template in `agent/comfy_workflow.py`.
+
+> The `SKILL.md` for each model (`agent/skills/<model>/SKILL.md`) lists the
+> download URLs and sampler-specific tips — worth a read before you first run
+> that model.
+
+### 3. Run inference
+
+**Via the example script** (env-var driven, no code edits needed):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-export COMFYUI_SERVER=127.0.0.1:8188      # host:port of ComfyUI
-export GEMS_COMFY_MODEL=z-image-turbo     # or qwen-image-2512 / flux-klein-9b / longcat-image
+export COMFYUI_SERVER=127.0.0.1:8188      # host:port of your ComfyUI
+export GEMS_COMFY_MODEL=z-image-turbo     # qwen-image-2512 | z-image-turbo | flux-klein-9b | longcat-image
 export GEMS_MAX_ITERATIONS=5
 python infer_comfy.py
 ```
 
 Output:
 
-* `infer_results/test_output_comfy.png` — final (best) image
-* `infer_results/workflows/workflow_NNN.json` — every workflow submitted
-  this run, pretty-printed for inspection / replay in the ComfyUI UI
+- `infer_results/test_output_comfy.png` — final (best) image
+- `infer_results/workflows/workflow_NNN.json` — every workflow submitted this
+  run, pretty-printed for inspection / replay in the ComfyUI web UI
 
 **Programmatic use:**
 
@@ -221,7 +250,7 @@ Output:
 from agent.comfy_gems import ComfyGEMS
 
 agent = ComfyGEMS(
-    model="qwen-image-2512",           # or alias: "qwen", "z-image", "flux-klein", "longcat", ...
+    model="qwen-image-2512",           # or: "z-image-turbo" / "flux-klein-9b" / "longcat-image"
     comfyui_server="127.0.0.1:8188",
     max_iterations=5,
     workflow_log_dir="run_workflows",  # optional: dump every submitted workflow
@@ -229,28 +258,41 @@ agent = ComfyGEMS(
     default_negative=None,             # optional: override per-model negative prompt
     workflow_timeout=600,              # optional: seconds to wait for one ComfyUI job
 )
-image_bytes = agent.run({"prompt": "a cozy cabin in a snowy pine forest at dusk"})
 
-# Build (but don't submit) the workflow, e.g. for offline inspection:
+# Full pipeline (decompose → generate → verify → refine):
+image_bytes = agent.run({"prompt": "a cozy cabin in a snowy pine forest at dusk"})
+with open("out.png", "wb") as f:
+    f.write(image_bytes)
+
+# Or just build the workflow (don't submit) for offline inspection:
 wf_dict = agent.build_workflow("a cozy cabin in a snowy pine forest at dusk")
 ```
 
-**Scope of this line (by design):** only `generate()` is new — the
-refine loop still edits only the positive prompt, verification is still
-the stock MLLM yes/no decomposition, and the workflow itself is NOT
-topologically evolved (no LoRA / ControlNet auto-insertion, no sampler
-LLM-tuning, no repair loop).  Use `comfyclaw` if you want topology
-evolution on top of ComfyUI.
+### 4. Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `litellm.BadRequestError: LLM Provider NOT provided` | Missing `ANTHROPIC_API_KEY` (or whichever provider `LITELLM_MODEL` points at). |
+| `ConnectionRefusedError` / `HTTP 0` | ComfyUI server not running at `COMFYUI_SERVER`. |
+| `Prompt has no outputs` | ComfyUI version too old (missing one of the custom nodes above). |
+| `Value not in list: unet_name` | Weight file not placed under `ComfyUI/models/unet/` with the exact filename shown in the table above. |
+| Generation hangs | Raise `workflow_timeout`, or check ComfyUI logs for OOM / VAE decode errors. |
+
+### Scope (by design)
+
+Only `generate()` is new. The refine loop still edits only the **positive prompt**,
+verification is still the stock MLLM yes/no decomposition, and the workflow itself
+is **not** topologically evolved (no LoRA / ControlNet auto-insertion, no sampler
+LLM-tuning, no repair loop). Use [`comfyclaw`](https://github.com/...) if you want
+topology evolution on top of ComfyUI.
 
 ---
 
-### Evaluation
+## Evaluation
 
 Images are first generated with GEMS, then scored with task-specific methods.
 
-**GenEval2:**
-
-First, download the benchmark data:
+### GenEval2
 
 ```bash
 # Option A — from Hugging Face
@@ -260,28 +302,20 @@ hf download Jialuo21/GenEval2 --repo-type dataset --local-dir /path/to/GenEval2
 git clone https://github.com/facebookresearch/GenEval2.git /path/to/GenEval2
 ```
 
-Then set `DATA_PATH` and `OUTPUT_DIR` at the top of `eval/GenEval2.py` to point to your local copy, and run:
+Set `DATA_PATH`, `OUTPUT_DIR`, `gen_url`, `mllm_url` at the top of
+`eval/GenEval2.py`, then:
 
 ```bash
-python eval/GenEval2.py \
-    --name my_run \
-    --agent gems \
-    --max_iterations 5
+python eval/GenEval2.py --name my_run --agent gems --max_iterations 5
 ```
 
-Set `gen_url` and `mllm_url` at the top of `eval/GenEval2.py` before running.
-
-**CREA:**
+### CREA
 
 ```bash
-python eval/CREA/CREA.py \
-    --name my_run \
-    --agent gems \
-    --max_iterations 5 \
-    --n_samples 25
+python eval/CREA/CREA.py --name my_run --agent gems --max_iterations 5 --n_samples 25
 ```
 
-**ArtiMuse:**
+### ArtiMuse
 
 ```bash
 python eval/ArtiMuse/gen_artimuse.py \
@@ -290,25 +324,27 @@ python eval/ArtiMuse/gen_artimuse.py \
     --max_iterations 5
 ```
 
-**Note:** Occasional server errors (e.g., timeouts) may result in missing outputs for a few tasks. Simply re-run — the scripts automatically skip already-completed items.
+Occasional server errors (e.g. timeouts) may leave a few tasks empty — just re-run,
+the scripts skip already-completed items. Full evaluation code is provided for
+**CREA** and **ArtiMuse**; for other tasks, evaluations follow their official
+settings.
 
-We provide full evaluation code for **CREA** and **ArtiMuse**. For other tasks, evaluations follow their official settings.
+---
 
+## Skills
 
-### Skills
 ![Skill](assets/skill_demo.png)
 
-Our Skills are summarized from previous works and tested on downstream tasks. You can also add your own by referring to `agent/skills`.
-
-Each skill should be organized as follows:
+Our Skills are summarized from previous works and tested on downstream tasks. You
+can add your own by creating a folder under `agent/skills/`:
 
 ```text
 agent/skills/
-└── <skill_id>/             # Unique folder name (used as Skill ID)
-    └── SKILL.md            # Skill definition file
+└── <skill_id>/             # folder name is the skill ID
+    └── SKILL.md
 ```
 
-`SkillManager` accepts **either** of the two formats below (auto-detected):
+`SkillManager` auto-detects and supports **both** of the formats below.
 
 **Format A — legacy GEMS template:**
 
@@ -320,29 +356,31 @@ Provide a concise summary of what this skill does.
 
 ## Instructions
 Provide detailed domain-specific guidance, prompts, or constraints here.
-The code will capture all content remaining below this header.
+The code captures all content below this header.
 ```
 
-**Format B — Agent-Skills YAML frontmatter** (used by the ComfyUI-line
-model skills imported from comfyclaw):
+**Format B — Agent-Skills YAML frontmatter** (used by the ComfyUI-line model skills
+imported from `comfyclaw`):
 
 ```markdown
 ---
 name: <skill-id>
 description: >-
-  One-or-more-line description of the skill.
+  One- or multi-line description of the skill.
 ---
 
-The entire body below the closing `---` becomes the skill's
-instructions.
+The entire body below the closing `---` becomes the skill's instructions.
 ```
 
-Both formats surface the folder name as the `SKILL_ID` in the planner
-manifest.
+The folder name is always surfaced as the `SKILL_ID` in the planner manifest.
 
-### Citation
+---
+
+## Citation
+
 If you find our work useful, please consider citing:
-```code
+
+```bibtex
 @article{he2026gems,
   title={GEMS: Agent-Native Multimodal Generation with Memory and Skills},
   author={He, Zefeng and Huang, Siyuan and Qu, Xiaoye and Li, Yafu and Zhu, Tong and Cheng, Yu and Yang, Yang},
