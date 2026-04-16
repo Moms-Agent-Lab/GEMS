@@ -85,10 +85,10 @@ cp .env.example .env                       # then edit .env
 # COMFYUI_ADDR=127.0.0.1:8188             # ← your ComfyUI address
 
 # 3. Install the ComfyUI plugin (one-time), then restart ComfyUI
-comfyclaw install-node
+uv run comfyclaw install-node
 
 # 4. Start the ComfyClaw server
-comfyclaw serve
+uv run comfyclaw serve
 ```
 
 Now open ComfyUI in your browser. You'll see:
