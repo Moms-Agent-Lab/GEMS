@@ -7,7 +7,11 @@ Benchmark and experiment scripts for evaluating ComfyClaw against baselines.
 - ComfyUI running and accessible (default: `127.0.0.1:8188`)
 - In ComfyUI, do `python main.py --listen 127.0.0.1 --port 8188`
 - `ANTHROPIC_API_KEY` environment variable set
-- GenEval2 data (`geneval2_data.jsonl`) — override path with `GENEVAL2_DATA` env var
+- GenEval2 data (`geneval2_data.jsonl`) — clone the dataset repo as a sibling directory:
+  ```bash
+  git clone https://github.com/facebookresearch/GenEval2.git ../GenEval2
+  ```
+  Override the default path with the `GENEVAL2_DATA` env var if needed
 - Model checkpoints installed in ComfyUI's `models/` directories
 - Run experiment `N_PROMPTS=800 python experiments/claw_qwen_benchmark.py --max-iterations 5 --evolve-batch-size 5 --parallel 2`
 
