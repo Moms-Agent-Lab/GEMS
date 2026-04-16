@@ -18,19 +18,19 @@ Benchmark and experiment scripts for evaluating ComfyClaw against baselines.
   COMFYUI_DIR=/path/to/ComfyUI
 
   # Diffusion model (~40.9 GB)
-  huggingface-cli download Comfy-Org/Qwen-Image_ComfyUI \
+  hf download Comfy-Org/Qwen-Image_ComfyUI \
     split_files/diffusion_models/qwen_image_bf16.safetensors \
-    --local-dir "$COMFYUI_DIR/models" --local-dir-use-symlinks False
+    --local-dir "$COMFYUI_DIR/models"
 
   # Text encoder (~16.6 GB)
-  huggingface-cli download Comfy-Org/Qwen-Image_ComfyUI \
+  hf download Comfy-Org/Qwen-Image_ComfyUI \
     split_files/text_encoders/qwen_2.5_vl_7b.safetensors \
-    --local-dir "$COMFYUI_DIR/models" --local-dir-use-symlinks False
+    --local-dir "$COMFYUI_DIR/models"
 
   # VAE
-  huggingface-cli download Comfy-Org/Qwen-Image_ComfyUI \
+  hf download Comfy-Org/Qwen-Image_ComfyUI \
     split_files/vae/qwen_image_vae.safetensors \
-    --local-dir "$COMFYUI_DIR/models" --local-dir-use-symlinks False
+    --local-dir "$COMFYUI_DIR/models"
   ```
   Files will land under `models/split_files/{diffusion_models,text_encoders,vae}/`. Move or symlink them to the standard ComfyUI layout if needed:
   ```bash
