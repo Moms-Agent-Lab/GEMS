@@ -33,7 +33,15 @@ ComfyUI line, fan out across 4 ComfyUI servers::
 """
 
 import os
+import sys
 import json
+
+# Make `from agent.*` resolvable regardless of CWD (and, crucially, inside
+# spawn-started child processes whose sys.path[0] is this script's dir).
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import torch.multiprocessing as mp
 from tqdm import tqdm
 import argparse
