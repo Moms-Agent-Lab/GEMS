@@ -42,9 +42,23 @@ from experiments.benchmarks import BENCHMARKS
 
 # ── Config (env overridable) ──────────────────────────────────────────────
 API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-COMFYUI_ADDR = os.environ.get("COMFYUI_ADDR", "127.0.0.1:8188")
 LLM_MODEL = os.environ.get("LLM_MODEL", "anthropic/claude-sonnet-4-5")
 SKILLS_DIR = str(REPO_ROOT / "comfyclaw" / "skills")
+
+
+def _parse_comfyui_addrs() -> list[str]:
+    """Parse ComfyUI server addresses from env vars.
+
+    Checks COMFYUI_ADDRS (comma-separated) first, then falls back to
+    the single-address COMFYUI_ADDR for backwards compatibility.
+    """
+    multi = os.environ.get("COMFYUI_ADDRS", "")
+    if multi:
+        return [a.strip() for a in multi.split(",") if a.strip()]
+    return [os.environ.get("COMFYUI_ADDR", "127.0.0.1:8188")]
+
+
+COMFYUI_ADDRS: list[str] = _parse_comfyui_addrs()
 
 
 def _slug(text: str, max_len: int = 50) -> str:
@@ -216,13 +230,14 @@ def run_one(
     paths: dict,
     max_iterations: int,
     warm_start: bool,
+    server_address: str = "127.0.0.1:8188",
 ) -> dict:
     from comfyclaw.harness import ClawHarness, HarnessConfig
 
     t0 = time.time()
     cfg = HarnessConfig(
         api_key=API_KEY,
-        server_address=COMFYUI_ADDR,
+        server_address=server_address,
         model=LLM_MODEL,
         max_iterations=max_iterations,
         success_threshold=0.95,
@@ -428,6 +443,9 @@ def main():
                         help="Start from empty workflow instead of model's base workflow")
     parser.add_argument("--data-path", type=str, default=None,
                         help="Override path to benchmark data file/directory")
+    parser.add_argument("--comfyui-addrs", type=str, default=None,
+                        help="Comma-separated ComfyUI addresses (e.g. 127.0.0.1:8188,127.0.0.1:8189). "
+                             "Also settable via COMFYUI_ADDRS env var. Defaults to single instance on :8188")
     args = parser.parse_args()
 
     model_config = MODELS[args.model]
@@ -439,6 +457,11 @@ def main():
     evolve_batch_size = args.evolve_batch_size
     parallel_size = args.parallel
     warm_start = not args.no_warm_start
+
+    if args.comfyui_addrs:
+        comfyui_addrs = [a.strip() for a in args.comfyui_addrs.split(",") if a.strip()]
+    else:
+        comfyui_addrs = COMFYUI_ADDRS
 
     os.makedirs(os.path.join(paths["output_dir"], "images"), exist_ok=True)
     os.makedirs(paths["detailed_dir"], exist_ok=True)
@@ -460,6 +483,7 @@ def main():
                  model_config["name"], bench_config["name"], n_prompts)
 
     log.info("LLM: %s  Diffusion: %s", LLM_MODEL, model_config["name"])
+    log.info("ComfyUI instances: %d  [%s]", len(comfyui_addrs), ", ".join(comfyui_addrs))
     log.info("Max iterations: %d  Warm-start: %s  Evolve batch: %s  Parallel: %d",
              max_iterations, warm_start,
              str(evolve_batch_size) if evolve_batch_size > 0 else "disabled",
@@ -494,9 +518,9 @@ def main():
     pending_errors: list[dict] = []
     errors_lock = threading.Lock()
 
-    def _run_and_record(i: int, prompt_text: str) -> None:
+    def _run_and_record(i: int, prompt_text: str, server_address: str) -> None:
         tag = f"[idx={i:03d}]"
-        log.info("%s RUNNING  %s", tag, prompt_text)
+        log.info("%s RUNNING on %s  %s", tag, server_address, prompt_text)
         try:
             r = run_one(
                 prompt_text, i,
@@ -505,6 +529,7 @@ def main():
                 paths=paths,
                 max_iterations=max_iterations,
                 warm_start=warm_start,
+                server_address=server_address,
             )
             with results_lock:
                 results.append(r)
@@ -565,12 +590,13 @@ def main():
                  len(batch), ", ".join(str(idx) for idx, _ in batch))
 
         if parallel_size == 1:
-            _run_and_record(batch[0][0], batch[0][1])
+            _run_and_record(batch[0][0], batch[0][1], comfyui_addrs[0])
         else:
             with ThreadPoolExecutor(max_workers=parallel_size) as pool:
                 futures = {
-                    pool.submit(_run_and_record, idx, prompt_text): idx
-                    for idx, prompt_text in batch
+                    pool.submit(_run_and_record, idx, prompt_text,
+                                comfyui_addrs[j % len(comfyui_addrs)]): idx
+                    for j, (idx, prompt_text) in enumerate(batch)
                 }
                 for future in as_completed(futures):
                     idx = futures[future]

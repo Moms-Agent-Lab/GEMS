@@ -14,21 +14,25 @@ These errors (`exception_during_inner_validation`) typically indicate:
 2. **Missing required connection** - a mandatory input is unwired
 3. **Invalid slot reference** - referring to output slot that doesn't exist
 4. **Node ID doesn't exist** - referencing a node that isn't in the workflow
+5. **Malformed node configuration** - corrupt class_type, missing inputs dict, or invalid structure
 
 ### Systematic Debugging for Inner Validation Errors
 When you see `exception_during_inner_validation` on a specific node ID:
 
 1. **Verify the node exists** - Check that the node ID is actually defined in your workflow
-2. **Check ALL inputs are wired** - Every required input must have a valid connection
-3. **Verify connection types match** - MODEL→MODEL, CLIP→CLIP, VAE→VAE, LATENT→LATENT, IMAGE→IMAGE
-4. **Validate source slot indices** - Ensure you're using the correct output slot from upstream nodes
-5. **Check source nodes exist** - All nodes referenced in connections must be present
+2. **Validate node structure** - Ensure node has `class_type` and `inputs` keys with correct format
+3. **Check ALL inputs are wired** - Every required input must have a valid connection
+4. **Verify connection types match** - MODEL→MODEL, CLIP→CLIP, VAE→VAE, LATENT→LATENT, IMAGE→IMAGE
+5. **Validate source slot indices** - Ensure you're using the correct output slot from upstream nodes
+6. **Check source nodes exist** - All nodes referenced in connections must be present
 
 ### Common Patterns That Cause This Error
 ❌ Connecting to a node ID that doesn't exist in the workflow
 ❌ Using wrong slot index (e.g., slot 2 when node only has slots 0-1)
 ❌ Type mismatch (CLIP connected to VAE input)
 ❌ Forgetting to wire a required input
+❌ Malformed connection array format (must be `["source_node_id", slot_index]`)
+❌ Node missing `inputs` dictionary or has corrupted structure
 
 ## Node Output Slot Indices
 
@@ -78,6 +82,9 @@ When you see `exception_during_inner_validation` on a specific node ID:
 ❌ **WRONG**: Referencing slot 2 on a node with only 2 outputs
 ✅ **CORRECT**: 2 outputs = slots [0, 1] only
 
+❌ **WRONG**: Connection format `{"node": "5", "slot": 0}`
+✅ **CORRECT**: Connection format `["5", 0]` (array with node_id string and slot integer)
+
 ## Parameter Value Constraints
 
 ### Numeric Ranges
@@ -100,7 +107,8 @@ When you see `exception_during_inner_validation` on a specific node ID:
 
 Before submitting ANY workflow:
 - [ ] All referenced node IDs actually exist in the workflow
-- [ ] Every required input is connected
+- [ ] Every node has valid `class_type` and `inputs` dictionary
+- [ ] Every required input is connected with format `["node_id", slot_index]`
 - [ ] All connections use correct slot indices (0-indexed)
 - [ ] Data types match: MODEL→MODEL, CLIP→CLIP, VAE→VAE, LATENT→LATENT, IMAGE→IMAGE
 - [ ] Checkpoint loader connections: slot 0=MODEL, slot 1=CLIP, slot 2=VAE
@@ -111,12 +119,12 @@ Before submitting ANY workflow:
 
 ```
 CheckpointLoaderSimple → [0: MODEL, 1: CLIP, 2: VAE]
-LoraLoader           → [0: MODEL, 1: CLIP]
-VAELoader            → [0: VAE]
-CLIPTextEncode       → [0: CONDITIONING]
-VAEEncode            → [0: LATENT]
-VAEDecode            → [0: IMAGE]
-KSampler             → [0: LATENT]
+LoraLoader            → [0: MODEL, 1: CLIP]
+VAELoader             → [0: VAE]
+CLIPTextEncode        → [0: CONDITIONING]
+VAEEncode             → [0: LATENT]
+VAEDecode             → [0: IMAGE]
+KSampler              → [0: LATENT]
 ```
 
-**When connecting nodes**: Always verify the source node's slot index matches the required input type.
+**Connection format**: `["source_node_id", slot_index]` where node_id is string and slot_index is integer (0-indexed).
