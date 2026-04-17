@@ -47,9 +47,21 @@ bash ./experiments/launch_comfyui.sh 3
 
 python experiments/run_benchmark.py \
     --model longcat --benchmark geneval2 \
-    --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5
+    --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5 \
+    --comfyui-addrs 127.0.0.1:8189,127.0.0.1:8190
 
-python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5 --comfyui-addrs 127.0.0.1:8188,127.0.0.1:8189,127.0.0.1:8190
+
+or
+
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5 --comfyui-addrs 127.0.0.1:8188
+```
+
+### Inspect outputs
+
+```
+# Follow all 3 logs at once
+tail -f /tmp/comfyui_8188.log /tmp/comfyui_8189.log /tmp/comfyui_8190.log
 ```
 
 ### All model × benchmark commands
