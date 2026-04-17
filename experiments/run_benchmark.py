@@ -8,7 +8,7 @@ collection, resume, and summary reporting) lives here.
 
 Usage:
     python experiments/run_benchmark.py --model longcat --benchmark geneval2 \\
-        --n-prompts 800 --max-iterations 5 --evolve-batch-size 5 --parallel 2
+        --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2
 
     python experiments/run_benchmark.py --model qwen --benchmark dpg-bench
 
@@ -418,8 +418,8 @@ def main():
                         help="Run a single custom prompt instead of the benchmark set")
     parser.add_argument("--n-prompts", type=int, default=None,
                         help="Number of prompts (default: benchmark's full set)")
-    parser.add_argument("--max-iterations", type=int, default=5,
-                        help="Max agent iterations per prompt (default: 5)")
+    parser.add_argument("--max-iterations", type=int, default=4,
+                        help="Max agent iterations per prompt (default: 4)")
     parser.add_argument("--evolve-batch-size", type=int, default=0,
                         help="Evolve skills every N prompts (0 = disabled)")
     parser.add_argument("--parallel", type=int, default=1,

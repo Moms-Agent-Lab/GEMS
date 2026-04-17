@@ -42,7 +42,9 @@ source .venv/bin/activate
 
 python experiments/run_benchmark.py \
     --model longcat --benchmark geneval2 \
-    --n-prompts 800 --max-iterations 5 --evolve-batch-size 5 --parallel 2
+    --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2
+
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2
 ```
 
 ### All model × benchmark commands
@@ -70,7 +72,7 @@ python experiments/run_benchmark.py \
 | DreamShaper | OneIG-ZH | `python experiments/run_benchmark.py --model dreamshaper --benchmark oneig-zh` |
 | DreamShaper | WISE | `python experiments/run_benchmark.py --model dreamshaper --benchmark wise` |
 
-Append common flags as needed: `--n-prompts 800 --max-iterations 5 --evolve-batch-size 5 --parallel 2`
+Append common flags as needed: `--n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2`
 
 Single custom prompt (no benchmark dataset needed):
 
@@ -106,7 +108,7 @@ python experiments/run_benchmark.py --model longcat --benchmark geneval2 \
 | `--benchmark` | *required* | Benchmark dataset (`geneval2`, `dpg-bench`, `oneig-en`, `oneig-zh`, `wise`) |
 | `--prompt` | — | Run a single custom prompt instead of the benchmark set |
 | `--n-prompts` | benchmark default | Number of prompts to run |
-| `--max-iterations` | `5` | Max agent iterations per prompt |
+| `--max-iterations` | `4` | Max agent iterations per prompt |
 | `--evolve-batch-size` | `0` (disabled) | Evolve skills every N prompts |
 | `--parallel` | `1` | Run N prompts concurrently |
 | `--no-warm-start` | `false` | Start from empty workflow instead of model's base workflow |
