@@ -42,6 +42,9 @@ any combination of model and benchmark through CLI flags.
 ```bash
 source .venv/bin/activate
 
+### Launch comfyUI
+bash ./experiments/launch_comfyui.sh 3
+
 python experiments/run_benchmark.py \
     --model longcat --benchmark geneval2 \
     --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5
