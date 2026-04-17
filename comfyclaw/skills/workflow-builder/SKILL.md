@@ -12,6 +12,7 @@ license: MIT
 metadata:
   author: comfyclaw
   version: "1.0.0"
+tags: [agent]
 ---
 
 # Workflow Builder — Constructing ComfyUI Pipelines From Scratch

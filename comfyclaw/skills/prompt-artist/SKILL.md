@@ -13,6 +13,7 @@ license: MIT
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 Choose the right mode based on what the user is asking for, then rewrite the

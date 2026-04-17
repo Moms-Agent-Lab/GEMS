@@ -12,6 +12,7 @@ allowed-tools: query_available_models add_lora_loader
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 LoRA adapters inject targeted weight corrections that base-model prompting

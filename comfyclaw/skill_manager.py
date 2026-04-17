@@ -54,6 +54,8 @@ class SkillProperties(NamedTuple):
     compatibility : Environment requirements (optional).
     allowed_tools : Space-delimited pre-approved tool list (optional, experimental).
     metadata      : Arbitrary key→value map (optional).
+    tags          : Classification tags for filtering (e.g. ``["agent"]``,
+                    ``["agent", "model:longcat"]``, ``["meta"]``).
     """
 
     name: str
@@ -63,6 +65,7 @@ class SkillProperties(NamedTuple):
     compatibility: str | None = None
     allowed_tools: str | None = None
     metadata: dict[str, str] | None = None
+    tags: list[str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +128,9 @@ def _parse_skill_md(skill_dir: Path) -> tuple[SkillProperties, str]:
     else:
         meta = None
 
+    raw_tags = fm.get("tags")
+    tags = list(raw_tags) if isinstance(raw_tags, list) else None
+
     props = SkillProperties(
         name=declared_name,
         description=str(fm["description"]).strip(),
@@ -133,6 +139,7 @@ def _parse_skill_md(skill_dir: Path) -> tuple[SkillProperties, str]:
         compatibility=fm.get("compatibility"),
         allowed_tools=fm.get("allowed-tools"),
         metadata=meta,
+        tags=tags,
     )
     body = parts[2].strip()
     return props, body
@@ -242,12 +249,22 @@ class SkillManager:
         """
         return self._cache[name][1]
 
-    def build_available_skills_xml(self) -> str:
+    def build_available_skills_xml(self, include_tags: set[str] | None = None) -> str:
         """
         Generate the ``<available_skills>`` XML block for agent system prompts.
 
         Follows the Anthropic-recommended format — only ``name``, ``description``,
         and ``location`` are exposed (stage-1 progressive disclosure).
+
+        Parameters
+        ----------
+        include_tags :
+            When provided, skills are filtered by their ``tags``.  For skills
+            with a ``model:*`` tag, at least one of those model tags must appear
+            in *include_tags* (so model-specific skills are only shown when
+            their model is active).  For all other skills, any tag overlap with
+            *include_tags* suffices.  Skills without tags are excluded.
+            Pass ``None`` (default) to include all skills regardless of tags.
 
         Example output::
 
@@ -266,6 +283,14 @@ class SkillManager:
         lines = ["<available_skills>"]
         for name in self.skill_names:
             props = self._props[name]
+            if include_tags is not None:
+                skill_tags = set(props.tags or [])
+                model_tags = {t for t in skill_tags if t.startswith("model:")}
+                if model_tags:
+                    if not model_tags & include_tags:
+                        continue
+                elif not skill_tags & include_tags:
+                    continue
             lines += [
                 "<skill>",
                 f"<name>{html.escape(props.name)}</name>",

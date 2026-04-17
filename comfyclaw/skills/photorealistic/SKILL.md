@@ -12,6 +12,7 @@ compatibility: ComfyClaw agent — requires KSampler and CLIPTextEncode nodes.
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 Apply these five adjustments to push the model into its photorealistic mode.

@@ -15,6 +15,7 @@ metadata:
   text_encoder:    qwen_2.5_vl_7b_fp8_scaled.safetensors → ComfyUI/models/text_encoders/
   vae:             ae.safetensors                         → ComfyUI/models/vae/
   variants: LongCat-Image, LongCat-Image-Dev, LongCat-Image-Edit, LongCat-Image-Edit-Turbo
+tags: [agent, "model:longcat"]
 ---
 
 LongCat-Image is Meituan's 6B text-to-image model released December 2025. Its defining

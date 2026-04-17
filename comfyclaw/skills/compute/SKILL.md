@@ -11,6 +11,7 @@ license: MIT
 metadata:
   author: comfyclaw
   version: "1.0.0"
+tags: [agent]
 ---
 
 # Compute — Resource-Aware Model Selection

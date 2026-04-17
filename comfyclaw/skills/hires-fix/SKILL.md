@@ -13,6 +13,7 @@ allowed-tools: add_hires_fix set_param
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 Hires fix works by decoding the base latent to pixels, upscaling, then

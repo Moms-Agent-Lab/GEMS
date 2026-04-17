@@ -6,6 +6,7 @@ license: MIT
 metadata:
   author: "davidliuk"
   version: "0.2.0"
+tags: [agent]
 ---
 
 # regional-control

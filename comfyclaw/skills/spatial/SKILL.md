@@ -12,6 +12,7 @@ license: MIT
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 Rewrite the prompt by covering the spatial dimensions relevant to the scene.

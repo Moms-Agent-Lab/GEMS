@@ -14,6 +14,7 @@ metadata:
   version: "1.0.0"
   base_arch: SD 1.5
   model_file: dreamshaper8_lcm.safetensors
+tags: [agent, "model:dreamshaper"]
 ---
 
 DreamShaper 8 LCM is a Latency Consistency Model fine-tuned on top of

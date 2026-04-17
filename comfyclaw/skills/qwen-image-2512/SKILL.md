@@ -15,6 +15,7 @@ metadata:
   text_encoder:    qwen_2.5_vl_7b_fp8_scaled.safetensors   → ComfyUI/models/text_encoders/
   vae:             qwen_image_vae.safetensors                → ComfyUI/models/vae/
   optional_lora:   Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors → ComfyUI/models/loras/
+tags: [agent, "model:qwen"]
 ---
 
 Qwen-Image-2512 is Alibaba's #1-ranked open-source T2I model on AI Arena (Dec 2025).

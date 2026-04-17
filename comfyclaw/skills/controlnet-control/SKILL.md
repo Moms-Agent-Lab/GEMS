@@ -13,6 +13,7 @@ allowed-tools: query_available_models add_controlnet
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 ControlNet solves structural problems that prompting cannot — the diffusion

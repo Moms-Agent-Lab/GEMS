@@ -11,6 +11,7 @@ compatibility: ComfyClaw agent — requires KSampler and CLIPTextEncode nodes.
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 Apply these five adjustments. Each targets a distinct failure mode.

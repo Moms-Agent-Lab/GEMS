@@ -15,6 +15,7 @@ metadata:
   diffusion_model: z_image_turbo_bf16.safetensors     → ComfyUI/models/diffusion_models/
   text_encoder:    qwen_3_4b.safetensors               → ComfyUI/models/text_encoders/
   vae:             ae.safetensors                       → ComfyUI/models/vae/
+tags: [agent, "model:z-image-turbo"]
 ---
 
 Z-Image-Turbo is Alibaba Tongyi Lab's 6B S3-DiT (Single-Stream DiT) model released

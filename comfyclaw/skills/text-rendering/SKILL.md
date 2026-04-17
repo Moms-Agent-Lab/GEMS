@@ -11,6 +11,7 @@ license: MIT
 metadata:
   author: davidliuk
   version: "0.2.0"
+tags: [agent]
 ---
 
 Diffusion models treat text as shapes, not language. Getting clean results

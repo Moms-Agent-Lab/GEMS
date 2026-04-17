@@ -702,9 +702,24 @@ class ClawAgent:
             iteration=iteration,
         )
 
+        include_tags = {"agent"}
+        if self.pinned_image_model:
+            model_lower = self.pinned_image_model.lower()
+            for keywords, tag in [
+                (["longcat"], "model:longcat"),
+                (["qwen"], "model:qwen"),
+                (["z_image", "z-image"], "model:z-image-turbo"),
+                (["dreamshaper"], "model:dreamshaper"),
+            ]:
+                if any(kw in model_lower for kw in keywords):
+                    include_tags.add(tag)
+                    break
+
         system_prompt = _build_system_prompt(
             self.pinned_image_model,
-            available_skills_xml=self.skill_manager.build_available_skills_xml(),
+            available_skills_xml=self.skill_manager.build_available_skills_xml(
+                include_tags=include_tags
+            ),
         )
 
         # System prompt as the first message (OpenAI / LiteLLM convention).
