@@ -225,6 +225,29 @@ def download_benchmark(
             marker.write_text("done\n")
             log.info("  OK %s", target)
 
+    _post_process(benchmark, target)
+
+
+def _post_process(benchmark: str, target: Path) -> None:
+    """Run any benchmark-specific post-processing after download."""
+    if benchmark == "dpg-bench":
+        jsonl_path = target / "prompts.jsonl"
+        if jsonl_path.exists():
+            return
+        parquet_files = sorted(target.rglob("*.parquet"))
+        if not parquet_files:
+            log.warning("  No parquet files found in %s — skipping conversion", target)
+            return
+        try:
+            import pandas as pd
+        except ImportError:
+            log.error("  pandas is required to convert DPG-Bench parquet to JSONL: pip install pandas pyarrow")
+            return
+        log.info("  Converting parquet → %s ...", jsonl_path)
+        df = pd.concat([pd.read_parquet(p) for p in parquet_files], ignore_index=True)
+        df.to_json(jsonl_path, orient="records", lines=True, force_ascii=False)
+        log.info("  OK %s (%d prompts)", jsonl_path, len(df))
+
 
 def main():
     all_models = list(MODEL_FILES.keys())

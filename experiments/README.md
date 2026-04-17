@@ -43,9 +43,9 @@ source .venv/bin/activate
 
 python experiments/run_benchmark.py \
     --model longcat --benchmark geneval2 \
-    --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2
+    --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5
 
-python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5
 ```
 
 ### All model × benchmark commands
@@ -73,7 +73,7 @@ python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-pro
 | DreamShaper | OneIG-ZH | `python experiments/run_benchmark.py --model dreamshaper --benchmark oneig-zh` |
 | DreamShaper | WISE | `python experiments/run_benchmark.py --model dreamshaper --benchmark wise` |
 
-Append common flags as needed: `--n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 2`
+Append common flags as needed: `--n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5`
 
 Single custom prompt (no benchmark dataset needed):
 
@@ -150,12 +150,12 @@ source .venv/bin/activate
 
 # Run every model on DPG-Bench
 for model in longcat qwen dreamshaper; do
-    python experiments/run_benchmark.py --model $model --benchmark dpg-bench --parallel 2
+    python experiments/run_benchmark.py --model $model --benchmark dpg-bench --parallel 5
 done
 
 # Run LongCat on every benchmark
 for bench in geneval2 dpg-bench oneig-en oneig-zh wise; do
-    python experiments/run_benchmark.py --model longcat --benchmark $bench --parallel 2
+    python experiments/run_benchmark.py --model longcat --benchmark $bench --parallel 5
 done
 
 # ── Quick smoke test with a single prompt ──────────────────────────────
