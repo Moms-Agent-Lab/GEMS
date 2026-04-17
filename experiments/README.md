@@ -7,6 +7,7 @@ Benchmark and experiment scripts for evaluating ComfyClaw against baselines.
 ```
 experiments/
 ├── run_benchmark.py              # Unified entry point (recommended)
+├── setup.py                      # Auto-download models + benchmark datasets
 ├── models/
 │   ├── __init__.py               # Auto-discovers and loads YAML configs
 │   ├── longcat.yaml              # LongCat Image (BF16) — Flux-based workflow
@@ -178,79 +179,77 @@ python experiments/run_benchmark.py --model longcat --benchmark dpg-bench \
 - In ComfyUI, do `python main.py --listen 127.0.0.1 --port 8188`
 - `ANTHROPIC_API_KEY` environment variable set
 
-### Benchmark data
+### Automated setup (recommended)
 
-Clone or download the benchmark datasets you plan to use as sibling directories:
+Use `setup.py` to download model checkpoints and benchmark datasets automatically:
 
 ```bash
-# GenEval2 (required for --benchmark geneval2)
+source .venv/bin/activate
+
+# Download everything (all models + all benchmarks)
+python experiments/setup.py --all
+
+# Download only specific models and benchmarks
+python experiments/setup.py --model longcat --model qwen --benchmark geneval2
+
+# Just models (no benchmarks)
+python experiments/setup.py --models-only
+
+# Just benchmarks (no models)
+python experiments/setup.py --benchmarks-only
+
+# Preview what would be downloaded (no actual downloads)
+python experiments/setup.py --dry-run --all
+
+# Custom ComfyUI path
+python experiments/setup.py --all --comfyui-dir /path/to/ComfyUI
+```
+
+The script skips files that already exist, so it's safe to re-run. Shared files (e.g. `qwen_2.5_vl_7b.safetensors`, `ae.safetensors`) are downloaded once.
+
+After downloading models, restart ComfyUI so it picks up the new files.
+
+### Manual setup (alternative)
+
+<details>
+<summary>Click to expand manual download instructions</summary>
+
+#### Benchmark data
+
+```bash
 git clone https://github.com/facebookresearch/GenEval2.git ../GenEval2
-
-# DPG-Bench (required for --benchmark dpg-bench)
-# Download from https://huggingface.co/datasets/Jialuo21/DPG-Bench
-# or clone the ELLA repo: git clone https://github.com/TencentQQGYLab/ELLA.git ../DPG-Bench
-
-# OneIG-Bench (required for --benchmark oneig-en / oneig-zh)
-# Download from https://huggingface.co/datasets/OneIG-Bench/OneIG-Bench
-
-# WISE (required for --benchmark wise)
 git clone https://github.com/PKU-YuanGroup/WISE.git ../WISE
+# DPG-Bench: download from https://huggingface.co/datasets/Jialuo21/DPG-Bench
+# OneIG-Bench: download from https://huggingface.co/datasets/OneIG-Bench/OneIG-Bench
 ```
 
 Override data paths with env vars (`GENEVAL2_DATA`, `DPG_BENCH_DATA`, `ONEIG_EN_DATA`, `ONEIG_ZH_DATA`, `WISE_DATA`) or `--data-path`.
 
-### Model checkpoints
-
-#### Qwen Image (BF16)
+#### Model checkpoints
 
 ```bash
 COMFYUI_DIR=/path/to/ComfyUI
 
-hf download Comfy-Org/Qwen-Image_ComfyUI \
-  split_files/diffusion_models/qwen_image_bf16.safetensors \
-  --local-dir /tmp/qwen-image
+# Qwen Image
+hf download Comfy-Org/Qwen-Image_ComfyUI split_files/diffusion_models/qwen_image_bf16.safetensors --local-dir /tmp/qwen && mv /tmp/qwen/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
+hf download Comfy-Org/Qwen-Image_ComfyUI split_files/text_encoders/qwen_2.5_vl_7b.safetensors --local-dir /tmp/qwen && mv /tmp/qwen/split_files/text_encoders/* "$COMFYUI_DIR/models/text_encoders/"
+hf download Comfy-Org/Qwen-Image_ComfyUI split_files/vae/qwen_image_vae.safetensors --local-dir /tmp/qwen && mv /tmp/qwen/split_files/vae/* "$COMFYUI_DIR/models/vae/"
 
-hf download Comfy-Org/Qwen-Image_ComfyUI \
-  split_files/text_encoders/qwen_2.5_vl_7b.safetensors \
-  --local-dir /tmp/qwen-image
+# LongCat Image
+hf download Comfy-Org/LongCat-Image split_files/diffusion_models/longcat_image_bf16.safetensors --local-dir /tmp/longcat && mv /tmp/longcat/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
 
-hf download Comfy-Org/Qwen-Image_ComfyUI \
-  split_files/vae/qwen_image_vae.safetensors \
-  --local-dir /tmp/qwen-image
+# Z-Image-Turbo
+hf download Comfy-Org/z_image_turbo split_files/diffusion_models/z_image_turbo_bf16.safetensors --local-dir /tmp/zimage && mv /tmp/zimage/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
+hf download Comfy-Org/z_image_turbo split_files/text_encoders/qwen_3_4b.safetensors --local-dir /tmp/zimage && mv /tmp/zimage/split_files/text_encoders/* "$COMFYUI_DIR/models/text_encoders/"
 
-mv /tmp/qwen-image/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
-mv /tmp/qwen-image/split_files/text_encoders/*    "$COMFYUI_DIR/models/text_encoders/"
-mv /tmp/qwen-image/split_files/vae/*               "$COMFYUI_DIR/models/vae/"
-rm -r /tmp/qwen-image
+# DreamShaper 8
+hf download Lykon/DreamShaper DreamShaper_8_pruned.safetensors --local-dir "$COMFYUI_DIR/models/checkpoints/"
+
+# Shared VAE (ae.safetensors) — used by LongCat and Z-Image-Turbo
+# Download from f5aiteam/ComfyUI or any ungated Flux VAE source
 ```
 
-#### LongCat Image (BF16)
-
-```bash
-COMFYUI_DIR=/path/to/ComfyUI
-
-# Diffusion model (~12.5 GB)
-hf download Comfy-Org/LongCat-Image \
-  split_files/diffusion_models/longcat_image_bf16.safetensors \
-  --local-dir /tmp/longcat-image
-
-# Text encoder (~16.6 GB) — same Qwen2.5-VL-7B, shared with Qwen Image
-hf download Comfy-Org/Qwen-Image_ComfyUI \
-  split_files/text_encoders/qwen_2.5_vl_7b.safetensors \
-  --local-dir /tmp/longcat-image
-
-# VAE — Flux ae.safetensors
-# (download from an ungated source like f5aiteam/ComfyUI or your existing Flux VAE)
-
-mv /tmp/longcat-image/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
-mv /tmp/longcat-image/split_files/text_encoders/*    "$COMFYUI_DIR/models/text_encoders/"
-# Place ae.safetensors into $COMFYUI_DIR/models/vae/
-rm -r /tmp/longcat-image
-```
-
-#### DreamShaper 8
-
-Download `DreamShaper_8_pruned.safetensors` from [Lykon/DreamShaper](https://huggingface.co/Lykon/DreamShaper) into `$COMFYUI_DIR/models/checkpoints/`.
+</details>
 
 Then restart ComfyUI so it picks up the new models.
 
