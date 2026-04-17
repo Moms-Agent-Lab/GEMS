@@ -1,7 +1,7 @@
 ---
 name: cross-category-composition
 description: >-
-  Generate scenes mixing distinct object categories (animals with objects, different animal types together) using semantic regional prompts and attention balancing to prevent category collapse
+  Generate scenes mixing distinct object categories using regional prompts, attention balancing, and category isolation to prevent merging or omission
 license: MIT
 metadata:
   cluster: "multi_object_composition"
@@ -10,67 +10,69 @@ metadata:
 
 # Cross-Category Composition
 
-## Problem
-Diffusion models struggle when prompts mix different object categories (e.g., 'pig and backpack', 'car and flowers', 'bears and donut'). One category often dominates or objects blend incorrectly.
+## When to Use
+Trigger when prompts mix distinct categories:
+- Animals + objects (pig and backpack, bears and donut)
+- Multiple animal types (rabbits and sheep, cars and kangaroo)
+- Objects + plants (car and flowers)
+- Any scene where 2+ semantically distant concepts appear together
 
-## Detection Triggers
-- Prompt contains multiple distinct object categories from different domains
-- Mix of: animals + inanimate objects, different animal species, vehicles + nature, food + animals
-- Verifier reports missing object categories or merged objects
-- Benchmark prompts like 'a green backpack and a pig'
+Also trigger when verifier reports: missing objects, merged objects, category contamination, or wrong object types.
+
+## Core Problem
+Diffusion models collapse distinct categories into hybrid forms or omit weaker concepts entirely. "Pig and backpack" becomes "pig-shaped backpack" or just "pig".
 
 ## Solution Strategy
 
-### 1. Category Identification
-Parse prompt and identify distinct semantic categories:
-- Animals (mammals, birds, etc.)
-- Vehicles (cars, planes, etc.) 
-- Objects (backpack, furniture, etc.)
-- Food (donut, pizza, etc.)
-- Nature (flowers, trees, etc.)
-
-### 2. Semantic Regional Prompts
-Use `RegionalConditioningSimple` or `ConditioningSetMask` nodes:
-- Allocate spatial regions for each category (e.g., left=animal, right=object)
-- Each region gets a focused prompt with ONLY its category
-- Example: 'a pig' in left mask, 'a green backpack' in right mask
-- Add weak global prompt for scene cohesion: 'outdoor scene, natural lighting'
-
-### 3. Attention Balancing
-- Use `ConditioningAverage` with weight 0.6-0.8 for category-specific conditioning
-- Apply `ConditioningConcat` to combine regional prompts
-- For categories with strong priors (animals), slightly reduce attention weight (0.55)
-- For weak categories (small objects), boost weight (0.7-0.75)
-
-### 4. Negative Prompts
-- Add category-specific negatives: 'merged objects, blended animals, hybrid creature'
-- Prevent semantic leakage: 'animal-shaped backpack, vehicle-shaped animal'
-
-### 5. Layout Guidance
-If categories are equal importance:
-- Use symmetric layout (side-by-side, diagonal)
-- Set equal mask sizes
-- Add compositional tokens: 'standing next to', 'beside', 'near'
-
-If one category dominates:
-- Foreground/background separation
-- Scale emphasis: '(large pig:1.2), (small backpack:0.9)'
-
-## Node Recipe
+### 1. Regional Prompt Separation
+Split each category into its own ConditioningSetArea:
 ```
-CLIPTextEncode → category_1_prompt → ConditioningSetMask(mask_1)
-CLIPTextEncode → category_2_prompt → ConditioningSetMask(mask_2)
-ConditioningCombine → [masked_cond_1, masked_cond_2]
-KSampler → combined_conditioning
+Prompt 1 (left/top region): "[COUNT] [OBJECT_A], highly detailed"
+Prompt 2 (right/bottom region): "[COUNT] [OBJECT_B], highly detailed"
+Base prompt: "[OBJECT_A] and [OBJECT_B] together in one scene"
 ```
+Use ConditioningCombine to merge regional prompts with strength 0.9 each.
 
-## When NOT to Use
-- Single category repeated (use counting-objects)
-- Spatial relationships only (use spatial skill)
-- Unusual attributes on single object (use unusual-attributes)
+### 2. Attention Isolation
+For each regional prompt, add negative tokens of the OTHER category:
+- Region A negative: "no [OBJECT_B], without [OBJECT_B]"
+- Region B negative: "no [OBJECT_A], without [OBJECT_A]"
+This prevents semantic bleeding.
 
-## Success Metrics
-- All categories present in output
-- No semantic blending between categories
-- Objects retain category-specific features
-- Natural spatial arrangement
+### 3. Explicit Enumeration
+When counts are involved, spell out each item:
+- "four rabbits" → "first rabbit, second rabbit, third rabbit, fourth rabbit"
+- "five bears" → "bear 1, bear 2, bear 3, bear 4, bear 5"
+
+### 4. Spatial Anchoring
+Add physical layout cues to each region:
+- "on the left side", "in the foreground"
+- "on the right side", "in the background"
+- "arranged in a row", "grouped together"
+
+### 5. Workflow Modifications
+- Set CFG to 8.5-9.5 (higher guidance prevents category collapse)
+- Use steps >= 35 for complex multi-object scenes
+- If using regional prompts, divide image into 60/40 or 50/50 splits
+- Consider MultiAreaConditioning if available for 3+ regions
+
+### 6. Fallback: Iterative Composition
+If regional prompts fail (not available or still failing):
+- Generate each category separately with identical scene context
+- Use image composition tools or inpainting to merge
+- This is slower but guarantees category preservation
+
+## Example Transformation
+Input: "a green backpack and a pig"
+Output:
+- Region 1 (left 50%): "a green backpack, outdoor gear, detailed textures, realistic materials" + negative "no pig, no animal"
+- Region 2 (right 50%): "a pig, farm animal, natural fur texture, realistic anatomy" + negative "no backpack, no bag"
+- Base: "green backpack and pig together in outdoor scene, photorealistic"
+- CFG: 9.0, steps: 40
+
+## Validation
+After generation, verify:
+1. Both categories present (not merged)
+2. Correct count for each category
+3. No hybrid artifacts
+4. Each object maintains category-appropriate features

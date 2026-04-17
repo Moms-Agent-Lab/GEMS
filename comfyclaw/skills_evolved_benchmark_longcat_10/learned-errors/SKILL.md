@@ -26,34 +26,42 @@ description: Read this when building or modifying ComfyUI workflows to avoid com
   - **NEVER pass string literal, file path, null, or leave unwired**
   - **NEVER pass IMAGE data - only accepts LATENT type**
   - **NEVER use wrong wire reference format - MUST be `["node_id", 0]` array**
-  - Common errors:
-    - `'str' object has no attribute 'shape'` = wrong data type passed
-    - `Required input is missing: samples` = unwired or invalid wire reference
+  - `'str' object has no attribute 'shape'` = **wrong data type passed to samples input**
 - **`vae`** - VAE from CheckpointLoaderSimple slot 2
 
-**Before submitting, ALWAYS check every VAEDecode node has valid `samples` wire in `["node_id", int_slot]` format.**
+**Before submitting, ALWAYS check every VAEDecode node has valid `samples` wire in `["node_id", int_slot]` format from a LATENT source.**
 
 ### KSampler - ALL Inputs Required
 
 **4 WIRED inputs (all mandatory - NEVER leave unwired):**
-- **`model`** - from CheckpointLoaderSimple slot 0
-- **`positive`** - from CLIPTextEncode slot 0
-- **`negative`** - from CLIPTextEncode slot 0
+- **`model`** - from CheckpointLoaderSimple slot 0 (MODEL type - NEVER pass string/path)
+  - `'str' object has no attribute 'get_model_object'` = you passed string instead of MODEL wire
+- **`positive`** - from CLIPTextEncode slot 0 or conditioning chain
+  - **NEVER leave unwired or null - ALWAYS wire from CONDITIONING source**
+- **`negative`** - from CLIPTextEncode slot 0 or conditioning chain
 - **`latent_image`** - from EmptyLatentImage slot 0 or VAEEncode slot 0
 
 **6 PARAMETERS in `inputs` dict (all mandatory - NEVER omit):**
 - **`seed`** - **MUST be integer >= 0** (NEVER -1, null, float like `123.0`, or string like `"123"`)
-  - Error `Failed to convert an input value to a INT value` means you passed float/string instead of int
+  - `Failed to convert an input value to a INT value` = you passed float/string instead of int
+  - **ALWAYS use Python int type: `123` not `123.0` or `"123"`**
 - **`steps`** - integer 1-10000
 - **`cfg`** - float 0.0-30.0
 - **`denoise`** - float 0.0-1.0
 - **`sampler_name`** - string
 - **`scheduler`** - string
 
+### EmptyLatentImage - All Parameters Required
+
+**3 PARAMETERS in `inputs` dict (all mandatory):**
+- **`width`** - **MUST be integer** (64-16384, typically 512, 1024)
+  - `Failed to convert an input value to a INT value` = you passed float/string instead of int
+- **`height`** - **MUST be integer** (64-16384, typically 512, 1024)
+- **`batch_size`** - **MUST be integer** (1-4096, typically 1)
+
 ### CLIPTextEncode - Both Required
 
 - **`text`** - **MUST be non-empty string in `inputs` dict** (NEVER null, empty string, or omitted)
-  - Error `Required input is missing: text` = you forgot to add `text` key or set it to null/empty
 - **`clip`** - wired from CheckpointLoaderSimple slot 1
 
 ### ControlNetApply - All Three Required
@@ -64,8 +72,10 @@ description: Read this when building or modifying ComfyUI workflows to avoid com
 
 ### FluxGuidance - Both Required
 
-- **`guidance`** - float parameter in `inputs` dict (NEVER omit)
-- **`conditioning`** - wired CONDITIONING input
+- **`guidance`** - **MUST be float parameter in `inputs` dict** (typically 3.0-4.0)
+  - **NEVER omit - this is REQUIRED parameter, not optional**
+  - `Required input is missing: guidance` = you forgot to add `guidance` to `inputs` dict
+- **`conditioning`** - wired CONDITIONING input from CLIPTextEncode slot 0
 
 ### Other Common Missing Inputs
 
@@ -95,56 +105,36 @@ description: Read this when building or modifying ComfyUI workflows to avoid com
 - `node_id` is **string** matching existing node's `id`
 - `slot_index` is **integer** (0, 1, or 2)
 - Array has exactly 2 non-null elements
-- MUST be array format, NEVER object/dict/string/null
 
 **Common errors:**
 - Using dict: `{"node": "1", "slot": 0}` ❌ → `["1", 0]` ✓
 - String slot: `["1", "0"]` ❌ → `["1", 0]` ✓
-- Missing brackets: `"1", 0` ❌ → `["1", 0]` ✓
 - Null values: `["1", null]` ❌ → `["1", 0]` ✓
-- Wrong node ID: `["99", 0]` where node "99" doesn't exist ❌
 
-**Invalid wire format causes `Required input is missing` even if you think input is wired.**
-
-## Parameter Type and Range Errors
+## Parameter Type Errors - CRITICAL
 
 **Integer parameters** (use Python int in `inputs` dict - NEVER float/string):
-- **`seed`** - **CRITICAL: MUST be Python int >= 0** 
-  - ❌ `123.0` (float), `"123"` (string), `-1`, `null`
-  - ✓ `123` (int)
-  - Error `Failed to convert an input value to a INT value` = you passed wrong type
-- `steps` (1-10000)
-- `batch_size`, `width`, `height`
+- **`seed`** - **MUST be Python int >= 0** (❌ `123.0`, `"123"`, `-1` | ✓ `123`)
+- **`width`**, **`height`**, **`batch_size`** - **MUST be Python int** (❌ `512.0`, `"512"` | ✓ `512`)
+- **`steps`** - **MUST be Python int**
+- `Failed to convert an input value to a INT value` = **you passed float or string instead of int**
 
 **Float parameters** (use Python float in `inputs` dict):
+- **`guidance`** (FluxGuidance - **REQUIRED**, typically 3.0-4.0)
 - **`conditioning_to_strength`** - **MUST be 0.0-1.0, NEVER exceed 1.0**
-  - Error `Value 1.2 bigger than max of 1.0` = you exceeded range
-- `denoise` (0.0-1.0)
-- `cfg` (0.0-30.0)
-- `guidance` (for FluxGuidance, typically 3.0-4.0)
-- **ALWAYS validate max ranges - exceeding causes `value_bigger_than_max` error**
+  - `Value X bigger than max of 1.0` = you set conditioning_to_strength > 1.0
+- `denoise` (0.0-1.0), `cfg` (0.0-30.0)
 
 **String parameters** (non-empty string in `inputs` dict):
 - **`text`** (for CLIPTextEncode - REQUIRED, NEVER null/empty/omitted)
 - `sampler_name`, `scheduler`
 
-## Runtime Errors
+## Runtime Type Errors
 
 **"'str' object has no attribute 'shape'"** means:
-- Wrong data type passed to node input (e.g., string instead of LATENT/IMAGE)
-- Most common: passing non-LATENT data to VAEDecode `samples` input
+- VAEDecode `samples` input has wrong data type (string/IMAGE instead of LATENT)
+- **FIX**: Verify wire connects to correct output slot of correct node type
 
-**"string index out of range"** means:
-- Invalid wire reference format (not `["string_id", int_slot]`)
-- Referencing non-existent node ID
-- Accessing wrong slot index
-- Malformed JSON structure in workflow
-
-## Pre-Submission Checklist
-
-- [ ] At least one SaveImage/PreviewImage exists
-- [ ] **All VAEDecode nodes have `samples` wired in valid `["node_id", 0]` format AND `vae` wired**
-- [ ] All KSampler nodes have 4 wired inputs + 6 parameters including **integer** `seed` >= 0 (not float/string)
-- [ ] **All CLIPTextEncode nodes have non-empty `text` string in `inputs` dict AND `clip` wired**
-- [ ] All ControlNetApply nodes have `conditioning`, `control_net`, AND `image` wired
-- [ ] All
+**"'str' object has no attribute 'get_model_object'"** means:
+- You passed a string instead of MODEL wire to `model` input
+- **FIX**: Wire from CheckpointLoaderSimple slot 0, NEVER

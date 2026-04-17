@@ -130,6 +130,9 @@ Decision heuristics
   Workflow contains QwenImageModelLoader → read_skill("qwen-image-2512") FIRST.
                                          Qwen has NO KSampler/ControlNet/LoRA —
                                          all tuning is on RH_QwenImageGenerator.
+  Active model contains "longcat"      → read_skill("longcat-image") FIRST.
+                                         LongCat uses CFGNorm + FluxGuidance, not
+                                         ModelSamplingAuraFlow. No LoRA/ControlNet.
   Active model name contains "lcm"     → read_skill("dreamshaper8-lcm") FIRST, before
                                          any sampler tuning — LCM needs different
                                          steps/cfg/sampler than standard SD models.
@@ -1427,32 +1430,41 @@ class ClawAgent:
                 if all(kw in model_lower for kw in skill_keywords if len(kw) > 2):
                     if skill_name not in relevant:
                         relevant.append(skill_name)
-        # Pre-load the model-specific skill body directly to avoid a
-        # read_skill round-trip that the agent would make on every invocation.
-        preloaded_skill: str | None = None
-        model_skill_name: str | None = None
+        # Pre-load model-specific skill(s) directly to avoid a read_skill
+        # round-trip that the agent would otherwise make on every invocation.
+        # Maps filename substrings → skill names for reliable detection.
+        _MODEL_SKILL_MAP: list[tuple[list[str], str]] = [
+            (["qwen_image"],                "qwen-image-2512"),
+            (["longcat_image"],             "longcat-image"),
+            (["longcat-image"],             "longcat-image"),
+            (["dreamshaper", "lcm"],        "dreamshaper8-lcm"),
+        ]
+        preloaded_skill_name: str | None = None
+
         if is_qwen:
-            model_skill_name = "qwen-image-2512"
+            preloaded_skill_name = "qwen-image-2512"
         elif active_model:
             model_lower = active_model.lower()
-            if "dreamshaper" in model_lower and "lcm" in model_lower:
-                model_skill_name = "dreamshaper8-lcm"
+            for keywords, skill_name in _MODEL_SKILL_MAP:
+                if all(kw in model_lower for kw in keywords):
+                    preloaded_skill_name = skill_name
+                    break
 
-        if model_skill_name:
+        if preloaded_skill_name:
             try:
-                preloaded_skill = self.skill_manager.get_body(model_skill_name)
+                preloaded_body = self.skill_manager.get_body(preloaded_skill_name)
             except KeyError:
-                preloaded_skill = None
+                preloaded_body = None
 
-        if preloaded_skill:
-            parts.append(
-                f"## Pre-loaded Skill: {model_skill_name}\n"
-                "The following skill instructions are pre-loaded for your active model. "
-                "You do NOT need to call read_skill for this — apply these instructions directly.\n\n"
-                f"{preloaded_skill}"
-            )
-            if model_skill_name in relevant:
-                relevant.remove(model_skill_name)
+            if preloaded_body:
+                parts.append(
+                    f"## Pre-loaded Skill: {preloaded_skill_name}\n"
+                    "The following skill instructions are pre-loaded for your active model. "
+                    "You do NOT need to call read_skill for this — apply these instructions directly.\n\n"
+                    f"{preloaded_body}"
+                )
+                if preloaded_skill_name in relevant:
+                    relevant.remove(preloaded_skill_name)
 
         if relevant:
             hint = ", ".join(sorted(relevant))
