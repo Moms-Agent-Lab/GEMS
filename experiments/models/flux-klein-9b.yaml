@@ -1,0 +1,112 @@
+# FLUX.2 [klein] 9B (BF16) — Black Forest Labs' turbo FLUX.2 variant
+# Architecture: Flux2 advanced sampler stack (CFGGuider + Flux2Scheduler +
+# SamplerCustomAdvanced + RandomNoise + KSamplerSelect) with Qwen3-8B encoder
+# CRITICAL: cfg=1, steps=4, sampler=euler — do NOT change these
+# No LoRA / ControlNet support for this model
+
+name: "FLUX.2 Klein 9B (BF16)"
+short_name: flux-klein-9b
+default_node_count: 14
+
+workflow:
+  "1":
+    class_type: UNETLoader
+    inputs:
+      unet_name: flux-2-klein-9b.safetensors
+      weight_dtype: default
+    _meta: { title: UNET Loader }
+
+  "2":
+    class_type: CLIPLoader
+    inputs:
+      clip_name: qwen_3_8b_fp8mixed.safetensors
+      type: flux2
+      device: default
+    _meta: { title: CLIP Loader }
+
+  "3":
+    class_type: VAELoader
+    inputs:
+      vae_name: flux2-vae.safetensors
+    _meta: { title: VAE Loader }
+
+  "4":
+    class_type: CLIPTextEncode
+    inputs:
+      clip: ["2", 0]
+      text: ""
+    _meta: { title: Positive Prompt }
+
+  "5":
+    class_type: CLIPTextEncode
+    inputs:
+      clip: ["2", 0]
+      text: ""
+    _meta: { title: Negative Prompt (empty) }
+
+  "6":
+    class_type: ConditioningZeroOut
+    inputs:
+      conditioning: ["5", 0]
+    _meta: { title: Conditioning Zero Out }
+
+  "7":
+    class_type: CFGGuider
+    inputs:
+      model: ["1", 0]
+      positive: ["4", 0]
+      negative: ["6", 0]
+      cfg: 1
+    _meta: { title: CFG Guider }
+
+  "8":
+    class_type: Flux2Scheduler
+    inputs:
+      steps: 4
+      width: 1024
+      height: 1024
+    _meta: { title: Flux2 Scheduler }
+
+  "9":
+    class_type: EmptyFlux2LatentImage
+    inputs:
+      width: 1024
+      height: 1024
+      batch_size: 1
+    _meta: { title: "Empty Flux2 Latent (1024x1024)" }
+
+  "10":
+    class_type: RandomNoise
+    inputs:
+      noise_seed: 42
+    _meta: { title: Random Noise }
+
+  "11":
+    class_type: KSamplerSelect
+    inputs:
+      sampler_name: euler
+    _meta: { title: KSampler Select }
+
+  "12":
+    class_type: SamplerCustomAdvanced
+    inputs:
+      noise: ["10", 0]
+      guider: ["7", 0]
+      sampler: ["11", 0]
+      sigmas: ["8", 0]
+      latent_image: ["9", 0]
+    _meta: { title: Sampler Custom Advanced }
+
+  "13":
+    class_type: VAEDecode
+    inputs:
+      samples: ["12", 0]
+      vae: ["3", 0]
+    _meta: { title: VAE Decode }
+
+  "14":
+    class_type: SaveImage
+    inputs:
+      images: ["13", 0]
+      filename_prefix: FluxKleinClaw
+    _meta: { title: Save Image }

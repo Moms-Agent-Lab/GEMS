@@ -13,7 +13,9 @@ experiments/
 │   ├── __init__.py               # Auto-discovers and loads YAML configs
 │   ├── longcat.yaml              # LongCat Image (BF16) — Flux-based workflow
 │   ├── qwen.yaml                 # Qwen Image 2512 (BF16) — AuraFlow-based workflow
-│   └── dreamshaper.yaml          # DreamShaper 8 — SD 1.5 single-checkpoint workflow
+│   ├── dreamshaper.yaml          # DreamShaper 8 — SD 1.5 single-checkpoint workflow
+│   ├── z-image-turbo.yaml        # Z-Image Turbo (BF16) — AuraFlow + zero-out negative
+│   └── flux-klein-9b.yaml        # FLUX.2 Klein 9B (BF16) — CFGGuider + Flux2Scheduler
 ├── benchmarks/
 │   ├── __init__.py               # Auto-discovers and loads YAML configs
 │   ├── geneval2.yaml             # GenEval2 (800 prompts, JSONL)
@@ -83,6 +85,11 @@ tail -f /tmp/comfyui_8188.log /tmp/comfyui_8189.log /tmp/comfyui_8190.log
 | Z-Image-Turbo | OneIG-EN | `python experiments/run_benchmark.py --model z-image-turbo --benchmark oneig-en` |
 | Z-Image-Turbo | OneIG-ZH | `python experiments/run_benchmark.py --model z-image-turbo --benchmark oneig-zh` |
 | Z-Image-Turbo | WISE | `python experiments/run_benchmark.py --model z-image-turbo --benchmark wise` |
+| FLUX.2 Klein 9B | GenEval2 | `python experiments/run_benchmark.py --model flux-klein-9b --benchmark geneval2` |
+| FLUX.2 Klein 9B | DPG-Bench | `python experiments/run_benchmark.py --model flux-klein-9b --benchmark dpg-bench` |
+| FLUX.2 Klein 9B | OneIG-EN | `python experiments/run_benchmark.py --model flux-klein-9b --benchmark oneig-en` |
+| FLUX.2 Klein 9B | OneIG-ZH | `python experiments/run_benchmark.py --model flux-klein-9b --benchmark oneig-zh` |
+| FLUX.2 Klein 9B | WISE | `python experiments/run_benchmark.py --model flux-klein-9b --benchmark wise` |
 | DreamShaper | GenEval2 | `python experiments/run_benchmark.py --model dreamshaper --benchmark geneval2` |
 | DreamShaper | DPG-Bench | `python experiments/run_benchmark.py --model dreamshaper --benchmark dpg-bench` |
 | DreamShaper | OneIG-EN | `python experiments/run_benchmark.py --model dreamshaper --benchmark oneig-en` |
@@ -104,7 +111,8 @@ python experiments/run_benchmark.py --model longcat --benchmark geneval2 \
 |---|---|---|
 | `--model longcat` | LongCat Image (BF16) | Flux-based (UNET + CFGNorm + FluxGuidance) |
 | `--model qwen` | Qwen Image 2512 (BF16) | AuraFlow-based (UNET + ModelSamplingAuraFlow) |
-| `--model z-image-turbo` | Z-Image-Turbo (BF16) | S3-DiT (UNET + AuraFlow, cfg=1, res_multistep) |
+| `--model z-image-turbo` | Z-Image Turbo (BF16) | S3-DiT (UNET + AuraFlow), 8-step turbo, zero-out negative (cfg=1, res_multistep) |
+| `--model flux-klein-9b` | FLUX.2 Klein 9B (BF16) | Flux2 sampler stack (CFGGuider + Flux2Scheduler + SamplerCustomAdvanced), 4-step turbo |
 | `--model dreamshaper` | DreamShaper 8 | Stable Diffusion 1.5 (single checkpoint) |
 
 ### Supported benchmarks
@@ -121,7 +129,7 @@ python experiments/run_benchmark.py --model longcat --benchmark geneval2 \
 
 | Flag | Default | Description |
 |---|---|---|
-| `--model` | *required* | Image generation model (`longcat`, `qwen`, `z-image-turbo`, `dreamshaper`) |
+| `--model` | *required* | Image generation model (`longcat`, `qwen`, `z-image-turbo`, `flux-klein-9b`, `dreamshaper`) |
 | `--benchmark` | *required* | Benchmark dataset (`geneval2`, `dpg-bench`, `oneig-en`, `oneig-zh`, `wise`) |
 | `--prompt` | — | Run a single custom prompt instead of the benchmark set |
 | `--n-prompts` | benchmark default | Number of prompts to run |
@@ -172,7 +180,7 @@ source .venv/bin/activate
 # ── Cross-model × cross-benchmark ─────────────────────────────────────
 
 # Run every model on DPG-Bench
-for model in longcat qwen dreamshaper; do
+for model in z-image-turbo longcat flux-klein-9b qwen dreamshaper; do
     python experiments/run_benchmark.py --model $model --benchmark dpg-bench --parallel 5
 done
 
@@ -298,6 +306,11 @@ hf download Comfy-Org/LongCat-Image split_files/diffusion_models/longcat_image_b
 hf download Comfy-Org/z_image_turbo split_files/diffusion_models/z_image_turbo_bf16.safetensors --local-dir /tmp/zimage && mv /tmp/zimage/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
 hf download Comfy-Org/z_image_turbo split_files/text_encoders/qwen_3_4b.safetensors --local-dir /tmp/zimage && mv /tmp/zimage/split_files/text_encoders/* "$COMFYUI_DIR/models/text_encoders/"
 
+# FLUX.2 Klein 9B
+hf download Comfy-Org/flux2-klein_ComfyUI split_files/diffusion_models/flux-2-klein-9b.safetensors --local-dir /tmp/flux-klein && mv /tmp/flux-klein/split_files/diffusion_models/* "$COMFYUI_DIR/models/diffusion_models/"
+hf download Comfy-Org/flux2-klein_ComfyUI split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors --local-dir /tmp/flux-klein && mv /tmp/flux-klein/split_files/text_encoders/* "$COMFYUI_DIR/models/text_encoders/"
+hf download Comfy-Org/flux2-klein_ComfyUI split_files/vae/flux2-vae.safetensors --local-dir /tmp/flux-klein && mv /tmp/flux-klein/split_files/vae/* "$COMFYUI_DIR/models/vae/"
+
 # DreamShaper 8
 hf download Lykon/DreamShaper DreamShaper_8_pruned.safetensors --local-dir "$COMFYUI_DIR/models/checkpoints/"
 
@@ -323,6 +336,7 @@ Each model instance uses roughly:
 |---|---|
 | LongCat Image (BF16) | ~27 GB |
 | Qwen Image (BF16) | ~25 GB |
+| FLUX.2 Klein 9B (BF16) | ~28 GB |
 | Z-Image-Turbo (BF16) | ~22 GB |
 | DreamShaper 8 (SD 1.5) | ~4 GB |
 
