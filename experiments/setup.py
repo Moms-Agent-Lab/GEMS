@@ -38,8 +38,8 @@ MODEL_FILES: dict[str, list[tuple[str, str, str]]] = {
         ("Comfy-Org/Qwen-Image_ComfyUI",
          "split_files/text_encoders/qwen_2.5_vl_7b.safetensors",
          "text_encoders"),
-        ("f5aiteam/ComfyUI",
-         "models/vae/ae.safetensors",
+        ("ffxvs/vae-flux",
+         "ae.safetensors",
          "vae"),
     ],
     "qwen": [
@@ -60,8 +60,8 @@ MODEL_FILES: dict[str, list[tuple[str, str, str]]] = {
         ("Comfy-Org/z_image_turbo",
          "split_files/text_encoders/qwen_3_4b.safetensors",
          "text_encoders"),
-        ("f5aiteam/ComfyUI",
-         "models/vae/ae.safetensors",
+        ("ffxvs/vae-flux",
+         "ae.safetensors",
          "vae"),
     ],
     "dreamshaper": [

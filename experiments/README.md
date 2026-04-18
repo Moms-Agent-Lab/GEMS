@@ -340,7 +340,7 @@ Use `setup.py` to download model checkpoints and benchmark datasets automaticall
 source .venv/bin/activate
 
 # Download everything (all models + all benchmarks)
-python experiments/setup.py --all
+python experiments/setup.py --all -comfyui-dir /path/to/your/ComfyUI
 
 # Download only specific models and benchmarks
 python experiments/setup.py --model longcat --model qwen --benchmark geneval2
