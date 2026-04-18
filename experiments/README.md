@@ -93,6 +93,20 @@ python experiments/run_benchmark.py --model longcat --benchmark geneval2 --basel
 tail -f /tmp/comfyui_8188.log /tmp/comfyui_8189.log /tmp/comfyui_8190.log
 ```
 
+
+### Evaluation Example
+
+```
+cd /fs/nexus-scratch/zli12321/self-evolving-UI/GEMS
+
+PYTHONPATH=/fs/nexus-scratch/zli12321/self-evolving-UI/GEMS python eval/GenEval2_data/evaluation.py \
+    --benchmark_data eval/GenEval2_data/geneval2_data.jsonl \
+    --image_filepath_data /fs/nexus-scratch/zli12321/self-evolving-UI/comfy_agent_baseline_experiments_output/longcat_geneval2/baseline_claude/results/image_paths.json \
+    --method soft_tifa_gm \
+    --output_file /fs/nexus-scratch/zli12321/self-evolving-UI/comfy_agent_baseline_experiments_output/longcat_geneval2/baseline_claude/results/scores_soft_tifa_gm.json
+```
+
+
 ### All model × benchmark commands
 
 | Model | Benchmark | Command |
