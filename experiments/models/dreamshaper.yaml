@@ -3,6 +3,7 @@
 name: "DreamShaper 8 (SD 1.5)"
 short_name: dreamshaper
 default_node_count: 7
+model_skill: dreamshaper8-lcm
 
 workflow:
   "1":

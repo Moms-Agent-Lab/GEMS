@@ -4,6 +4,7 @@
 name: "LongCat Image (BF16)"
 short_name: longcat
 default_node_count: 12
+model_skill: longcat-image
 
 workflow:
   "1":

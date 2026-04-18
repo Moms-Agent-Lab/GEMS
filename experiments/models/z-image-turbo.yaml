@@ -5,6 +5,7 @@
 name: "Z-Image-Turbo (BF16)"
 short_name: z-image-turbo
 default_node_count: 10
+model_skill: z-image-turbo
 
 workflow:
   "1":

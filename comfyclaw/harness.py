@@ -248,7 +248,10 @@ class ClawHarness:
         )
 
         mode = config.verifier_mode
-        if mode == "human":
+        if mode == "none":
+            self._verifier = None
+            log.info("Verifier mode: none (generate-only, no verification)")
+        elif mode == "human":
             from .human_verifier import HumanVerifier
 
             self._verifier = HumanVerifier(
@@ -358,7 +361,11 @@ class ClawHarness:
                 images = self._client.collect_images(history)
                 if images:
                     base_img = images[0]
-                    base_vr = self._verifier.verify(base_img, prompt) if not dry_run else None
+                    base_vr = (
+                        self._verifier.verify(base_img, prompt)
+                        if not dry_run and self._verifier is not None
+                        else None
+                    )
                     base_score = base_vr.score if base_vr else 0.0
                     print(f"[ClawHarness] 🏁 Baseline score: {base_score:.3f}")
                     best_image = base_img
@@ -776,7 +783,26 @@ class ClawHarness:
             image_bytes = images[0]
             print(f"[ClawHarness] 🖼  Got image ({len(image_bytes):,} bytes)")
 
-            # ── Verify ────────────────────────────────────────────────────
+            # ── Verify (skip when verifier_mode="none") ───────────────────
+            if self._verifier is None:
+                best_image = image_bytes
+                best_workflow_snapshot = wm.to_dict()
+                evo.generation_time_s = round(t_gen_elapsed, 2)
+                evo.repair_time_s = round(t_repair_total, 2)
+                self._evolution_log.record(evo)
+
+                self._memory.record(
+                    iteration=iteration,
+                    workflow_snapshot=wm.to_dict(),
+                    verifier_score=0.0,
+                    passed=[],
+                    failed=[],
+                    experience="No verifier (baseline mode).",
+                    image_bytes=image_bytes,
+                )
+                print("[ClawHarness] ⏭  Verifier disabled — skipping verification.")
+                break
+
             print("[ClawHarness] 🔍 Verifying image…")
             self._emit_status("verifying", iteration, "Verifying image…")
             t_verify_start = time.time()

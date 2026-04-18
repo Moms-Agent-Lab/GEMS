@@ -4,6 +4,7 @@
 name: "Qwen Image 2512 (BF16)"
 short_name: qwen
 default_node_count: 10
+model_skill: qwen-image-2512
 
 workflow:
   "1":

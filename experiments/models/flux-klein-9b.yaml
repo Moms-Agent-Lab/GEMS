@@ -6,6 +6,7 @@
 
 name: "FLUX.2 Klein 9B (BF16)"
 short_name: flux-klein-9b
+model_skill: flux-klein-9b
 default_node_count: 14
 
 workflow:

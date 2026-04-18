@@ -59,6 +59,33 @@ or
 python experiments/run_benchmark.py --model longcat --benchmark geneval2 --n-prompts 800 --max-iterations 4 --evolve-batch-size 5 --parallel 5 --comfyui-addrs 127.0.0.1:8188
 ```
 
+### Run GPT-5.4
+
+```
+LLM_MODEL="openai/gpt-5.4" \
+LLM_API_KEY="sk-..." \
+LLM_API_BASE="https://your-endpoint.openai.azure.com/v1" \
+
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 \
+    --max-iterations 4 --evolve-batch-size 5 --parallel 5 \
+    --comfyui-addrs 127.0.0.1:8190 \
+    --agent-name gpt-5.4
+```
+
+
+### Run baseline model
+```
+# Claude
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 --baseline --parallel 5
+
+# GPT-5.4
+LLM_MODEL="openai/gpt-5.4" \
+LLM_API_KEY="sk-..." \
+LLM_API_BASE="https://your-endpoint.openai.azure.com/v1" \
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 --baseline --parallel 5 \
+    --agent-name gpt-5.4
+```
+
 ### Inspect outputs
 
 ```

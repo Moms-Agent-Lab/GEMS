@@ -87,6 +87,31 @@ def _parse_comfyui_addrs() -> list[str]:
 COMFYUI_ADDRS: list[str] = _parse_comfyui_addrs()
 
 
+def _prepare_baseline_skills_dir(model_skill: str) -> str:
+    """Create a minimal skills directory containing only the model-specific skill.
+
+    Copies the single skill folder so the agent has access to model-specific
+    configuration (e.g. sampler params, architecture constraints) but nothing else.
+    Returns the path to the temporary skills directory.
+    """
+    import shutil
+
+    src_skills = REPO_ROOT / "comfyclaw" / "skills"
+    baseline_dir = REPO_ROOT / "comfyclaw" / "_baseline_skills"
+    if baseline_dir.exists():
+        shutil.rmtree(baseline_dir)
+    baseline_dir.mkdir(parents=True)
+
+    src_skill = src_skills / model_skill
+    if src_skill.is_dir():
+        shutil.copytree(src_skill, baseline_dir / model_skill)
+        log.info("Baseline skills: copied %s → %s", model_skill, baseline_dir / model_skill)
+    else:
+        log.warning("Model skill %r not found at %s — baseline will have no skills", model_skill, src_skill)
+
+    return str(baseline_dir)
+
+
 def _slug(text: str, max_len: int = 50) -> str:
     s = text.lower().strip()
     s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
@@ -264,6 +289,8 @@ def run_one(
     max_iterations: int,
     warm_start: bool,
     server_address: str = "127.0.0.1:8188",
+    is_baseline: bool = False,
+    skills_dir_override: str | None = None,
 ) -> dict:
     from comfyclaw.harness import ClawHarness, HarnessConfig
 
@@ -276,12 +303,13 @@ def run_one(
         success_threshold=0.95,
         sync_port=0,
         image_model=None,
-        stage_gated=True,
-        skills_dir=SKILLS_DIR,
-        evolved_skills_dir=paths["evolved_skills_dir"],
+        stage_gated=not is_baseline,
+        skills_dir=skills_dir_override or SKILLS_DIR,
+        evolved_skills_dir=None if is_baseline else paths["evolved_skills_dir"],
         max_nodes=20,
-        baseline_first=warm_start,
+        baseline_first=warm_start and not is_baseline,
         max_images=max_iterations + 2,
+        verifier_mode="none" if is_baseline else "vlm",
     )
 
     init_wf = copy.deepcopy(base_workflow) if warm_start else {}
@@ -483,18 +511,34 @@ def main():
                         help="Agent/LLM name for organizing output folders (e.g. 'gpt-5.4'). "
                              "Auto-derived from LLM_MODEL if not set. Results go to "
                              "{model}_{benchmark}/{agent_name}/")
+    parser.add_argument("--baseline", action="store_true",
+                        help="Baseline mode: 1 iteration, no verifier, only model-specific "
+                             "skill. The agent builds/tunes the workflow once with no feedback loop.")
     args = parser.parse_args()
 
     model_config = MODELS[args.model]
     bench_config = BENCHMARKS[args.benchmark]
-    agent_name = args.agent_name or _agent_slug(LLM_MODEL)
+    is_baseline = args.baseline
+    agent_name = args.agent_name or ("baseline" if is_baseline else _agent_slug(LLM_MODEL))
     paths = _build_paths(model_config["short_name"], bench_config["short_name"], agent_name)
 
     n_prompts = args.n_prompts or int(os.environ.get("N_PROMPTS", bench_config["default_n_prompts"]))
-    max_iterations = args.max_iterations
-    evolve_batch_size = args.evolve_batch_size
+    max_iterations = 1 if is_baseline else args.max_iterations
+    evolve_batch_size = 0 if is_baseline else args.evolve_batch_size
     parallel_size = args.parallel
     warm_start = not args.no_warm_start
+
+    if is_baseline:
+        model_skill = model_config.get("model_skill", "")
+        if model_skill:
+            SKILLS_DIR_OVERRIDE = _prepare_baseline_skills_dir(model_skill)
+        else:
+            log.warning("No model_skill defined for %s — baseline will use no skills",
+                        model_config["short_name"])
+            SKILLS_DIR_OVERRIDE = str(REPO_ROOT / "comfyclaw" / "_baseline_skills")
+            os.makedirs(SKILLS_DIR_OVERRIDE, exist_ok=True)
+    else:
+        SKILLS_DIR_OVERRIDE = None
 
     if args.comfyui_addrs:
         comfyui_addrs = [a.strip() for a in args.comfyui_addrs.split(",") if a.strip()]
@@ -521,6 +565,9 @@ def main():
                  model_config["name"], bench_config["name"], n_prompts)
 
     log.info("LLM: %s  Agent: %s  Diffusion: %s", LLM_MODEL, agent_name, model_config["name"])
+    if is_baseline:
+        log.info("MODE: BASELINE (1 iteration, no verifier, model skill only: %s)",
+                 model_config.get("model_skill", "none"))
     if LLM_API_BASE:
         log.info("LLM API base: %s", LLM_API_BASE)
     log.info("ComfyUI instances: %d  [%s]", len(comfyui_addrs), ", ".join(comfyui_addrs))
@@ -570,6 +617,8 @@ def main():
                 max_iterations=max_iterations,
                 warm_start=warm_start,
                 server_address=server_address,
+                is_baseline=is_baseline,
+                skills_dir_override=SKILLS_DIR_OVERRIDE,
             )
             with results_lock:
                 results.append(r)
