@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import litellm
 
@@ -620,20 +621,22 @@ _ARG_ALIASES: dict[str, dict[str, str]] = {
 
 
 # ---------------------------------------------------------------------------
-# Architecture registry
+# Architecture registry — loaded from per-skill ``arch.yaml`` at import time
 # ---------------------------------------------------------------------------
-# Each entry describes one non-standard model architecture.
-# Adding support for a new arch = add one ArchConfig here + write a SKILL.md.
-# Standard SD/SDXL/Flux falls through (arch is None) and uses the defaults.
+#
+# Adding support for a new model = add ``skills/<your-model>/arch.yaml``.
+# The dataclass below is the stable in-memory representation; the YAML schema
+# is the single source of truth (see ``load_arch_registry``).
+#
+# Standard SD/SDXL/Flux has no arch.yaml and falls through (``_detect_arch``
+# returns ``None``) so the default LoraLoader path is used.
+
 
 @dataclass
 class ArchConfig:
     # --- Detection ---
-    # Keywords checked against UNETLoader's unet_name (lower-cased)
     unet_keywords: tuple[str, ...]
-    # ComfyUI class_type values that unambiguously identify the arch
     node_classes: frozenset[str]
-    # Keywords checked against CLIPLoader's type param (lower-cased)
     clip_type_keywords: tuple[str, ...]
 
     # --- Skill routing ---
@@ -648,48 +651,77 @@ class ArchConfig:
     lora_supported: bool = True   # False for pipeline-based models with no MODEL tensor
 
 
-ARCH_REGISTRY: dict[str, ArchConfig] = {
-    "qwen_image": ArchConfig(
-        unet_keywords=("qwen_image",),
-        node_classes=frozenset({"QwenImageModelLoader", "RH_QwenImageGenerator"}),
-        clip_type_keywords=("qwen_image",),
-        skill_name="qwen-image-2512",
-        description=(
-            "Qwen-Image-2512 (20B MMDiT — LoraLoaderModelOnly for LoRA)"
-        ),
-        lora_node="LoraLoaderModelOnly",
-        lora_needs_clip=False,
-    ),
-    "z_image": ArchConfig(
-        unet_keywords=("z_image",),
-        node_classes=frozenset(),
-        # This ComfyUI uses CLIPLoader type "lumina2" for Z-Image-Turbo; some
-        # older forks used "qwen3_4b". Keep both so detection is robust.
-        clip_type_keywords=("lumina2", "qwen3_4b"),
-        skill_name="z-image-turbo",
-        description=(
-            "Z-Image-Turbo (6B S3-DiT — LoraLoaderModelOnly for LoRA)"
-        ),
-        lora_node="LoraLoaderModelOnly",
-        lora_needs_clip=False,
-    ),
-    "longcat_image": ArchConfig(
-        # Detection: the custom loader class_type is unambiguous
-        unet_keywords=("longcat",),
-        node_classes=frozenset({"LongCatImageModelLoader"}),
-        clip_type_keywords=(),
-        skill_name="longcat-image",
-        description=(
-            "LongCat-Image (6B by Meituan — custom pipeline nodes: "
-            "LongCatImageModelLoader → LongCatImageTextToImage; "
-            "use set_param for steps/guidance_scale; "
-            "LoRA is not available via standard tools for this arch)"
-        ),
-        lora_node="",
-        lora_needs_clip=False,
-        lora_supported=False,
-    ),
-}
+def _parse_arch_yaml(path: Path, skill_name: str) -> tuple[str, ArchConfig]:
+    """Parse a single ``arch.yaml`` file → ``(registry_name, ArchConfig)``.
+
+    Only ``registry_name`` and ``description`` are required; every other
+    field has a sane empty default so the YAML stays terse.
+    """
+    import yaml
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: arch.yaml must be a mapping")
+    if "registry_name" not in raw or not str(raw["registry_name"]).strip():
+        raise ValueError(f"{path}: missing required 'registry_name'")
+
+    det = raw.get("detection") or {}
+    lora = raw.get("lora") or {}
+
+    def _tuple(k: str) -> tuple[str, ...]:
+        v = det.get(k) or ()
+        return tuple(str(x) for x in v)
+
+    cfg = ArchConfig(
+        unet_keywords=_tuple("unet_keywords"),
+        node_classes=frozenset(str(x) for x in (det.get("node_classes") or ())),
+        clip_type_keywords=_tuple("clip_type_keywords"),
+        skill_name=str(raw.get("skill_name") or skill_name),
+        description=str(raw.get("description") or "").strip(),
+        lora_node=str(lora.get("node") or ""),
+        lora_needs_clip=bool(lora.get("needs_clip", False)),
+        lora_supported=bool(lora.get("supported", True)),
+    )
+    return str(raw["registry_name"]).strip(), cfg
+
+
+def load_arch_registry(skills_root: str | Path | None = None) -> dict[str, ArchConfig]:
+    """Scan a skills directory for ``*/arch.yaml`` and build an ARCH_REGISTRY.
+
+    This is the programmatic equivalent of "add a new diffusion model".  It
+    is called once at import time with the built-in skills dir, and can be
+    re-called by tests / users with a custom directory.
+    """
+    import warnings
+
+    if skills_root is None:
+        from .skill_manager import _BUILTIN_SKILLS_DIR as skills_root  # type: ignore[assignment]
+
+    root = Path(skills_root).resolve()
+    registry: dict[str, ArchConfig] = {}
+    if not root.is_dir():
+        return registry
+
+    for arch_yaml in sorted(root.rglob("arch.yaml")):
+        try:
+            name, cfg = _parse_arch_yaml(arch_yaml, skill_name=arch_yaml.parent.name)
+        except Exception as exc:
+            warnings.warn(
+                f"[ARCH_REGISTRY] skipping {arch_yaml}: {exc}", stacklevel=2
+            )
+            continue
+        if name in registry:
+            warnings.warn(
+                f"[ARCH_REGISTRY] duplicate registry_name={name!r} at {arch_yaml} "
+                f"(first declaration wins)",
+                stacklevel=2,
+            )
+            continue
+        registry[name] = cfg
+    return registry
+
+
+ARCH_REGISTRY: dict[str, ArchConfig] = load_arch_registry()
 
 
 class ClawAgent:
@@ -706,8 +738,15 @@ class ClawAgent:
                       ``"ollama/llama3.1"``.
     server_address  : ComfyUI HTTP address (used for model queries).
     skills_dir      : Path to pre-defined skills/ folder; ``None`` uses built-in.
-    evolved_skills_dir : Path to evolved/learned skills; ``None`` uses built-in
-                      ``skills_evolved/`` directory.
+    evolved_skills_dir : Explicit path for evolved/learned skills.  Resolution
+                      precedence (matches :class:`SkillManager`):
+                        * ``""``       → evolved skills disabled.
+                        * explicit     → used verbatim.
+                        * ``None`` + ``image_model_short`` + ``benchmark``
+                                       → derived via
+                                         :func:`comfyclaw.skill_manager.evolved_dir_for`
+                                         (``evolved_skills/<model>_<bench>[/<agent>]/``).
+                        * otherwise    → no evolved skills loaded.
     on_change       : Called with the workflow dict after every mutation.
     max_tool_rounds : Safety cap on tool-call iterations.
     """
@@ -745,6 +784,10 @@ class ClawAgent:
             benchmark=benchmark,
             agent_name=agent_name,
         )
+        # Remember these for include_tags filtering in plan_and_patch.
+        self.image_model_short = image_model_short
+        self.benchmark = benchmark
+        self.agent_name = agent_name
         self.on_change = on_change
         self.on_agent_event: Callable[[str, str, str, dict | None], None] | None = None
         self.max_tool_rounds = max_tool_rounds
@@ -791,7 +834,15 @@ class ClawAgent:
         )
 
         include_tags = {"agent"}
-        if self.pinned_image_model:
+        # Prefer the canonical short tag passed via ctor (set by ClawHarness);
+        # fall back to keyword matching on pinned_image_model so the agent
+        # still works when instantiated standalone without image_model_short.
+        image_model_short = getattr(self, "image_model_short", None)
+        benchmark = getattr(self, "benchmark", None)
+        agent_name = getattr(self, "agent_name", None)
+        if image_model_short:
+            include_tags.add(f"model:{image_model_short}")
+        elif self.pinned_image_model:
             model_lower = self.pinned_image_model.lower()
             for keywords, tag in [
                 (["longcat"], "model:longcat"),
@@ -802,6 +853,10 @@ class ClawAgent:
                 if any(kw in model_lower for kw in keywords):
                     include_tags.add(tag)
                     break
+        if benchmark:
+            include_tags.add(f"bench:{benchmark}")
+        if agent_name:
+            include_tags.add(f"agent:{agent_name}")
 
         system_prompt = _build_system_prompt(
             self.pinned_image_model,
@@ -1187,6 +1242,20 @@ class ClawAgent:
         sm = float(inputs.get("strength_model", 0.8))
         arch = self._detect_arch(wm)
 
+        # Defense-in-depth: even when the workflow uses standard loaders
+        # (UNETLoader / CLIPLoader) without a "longcat" keyword, a pinned
+        # image model name may still tell us we're on a pipeline-arch that
+        # does not expose a MODEL tensor.  Respect the pin and reject LoRA
+        # insertion BEFORE we touch the graph.
+        if arch is None and self.pinned_image_model:
+            pinned = self.pinned_image_model.lower()
+            for arch_cfg in ARCH_REGISTRY.values():
+                if arch_cfg.lora_supported:
+                    continue
+                if any(kw in pinned for kw in arch_cfg.unet_keywords):
+                    arch = arch_cfg
+                    break
+
         if arch is not None and not arch.lora_supported:
             return (
                 f"⚠️ LoRA is not supported for {arch.skill_name}. "
@@ -1217,6 +1286,14 @@ class ClawAgent:
                             rewired_model.append(f"{nid}.{inp_name}")
 
             self._notify(wm)
+            if not rewired_model:
+                return (
+                    f"⚠️ {arch.lora_node} {lora_nid} ({lora_name}, sm={sm}) inserted, but "
+                    f"NO downstream consumer of [{model_nid}, 0] (input name 'model') was "
+                    "found to rewire. The LoRA is currently DANGLING and will have no effect. "
+                    "Inspect the graph and either delete this node or point the sampler's "
+                    "'model' input at it manually."
+                )
             return (
                 f"✅ {arch.lora_node} {lora_nid} ({lora_name}, sm={sm})\n"
                 f"   Re-wired model: {rewired_model}"

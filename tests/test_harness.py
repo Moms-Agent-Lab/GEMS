@@ -552,3 +552,70 @@ class TestPinnedImageModel:
                 assert node["inputs"]["ckpt_name"] == "pinned.safetensors", (
                     f"Expected pinned model but got {node['inputs']['ckpt_name']!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Evolved-skills directory resolution
+# ---------------------------------------------------------------------------
+
+
+class TestEvolvedSkillsResolution:
+    """HarnessConfig is the single source of truth for ``evolved_skills_dir``.
+
+    Resolution order (must stay in sync with SkillManager):
+      1. ``""`` → disabled
+      2. explicit path → used verbatim
+      3. ``image_model_short`` + ``benchmark`` → auto-derived via ``evolved_dir_for``
+      4. otherwise → ``None`` (no evolved skills)
+    """
+
+    def test_explicit_empty_disables(self, minimal_workflow: dict) -> None:
+        cfg = HarnessConfig(
+            api_key="x", sync_port=0,
+            evolved_skills_dir="",
+            image_model_short="longcat",
+            benchmark="geneval2",
+        )
+        h = ClawHarness(minimal_workflow, cfg)
+        assert h.evolved_skills_dir == ""
+
+    def test_explicit_path_wins(self, tmp_path, minimal_workflow: dict) -> None:
+        custom = str(tmp_path / "custom-evolved")
+        cfg = HarnessConfig(
+            api_key="x", sync_port=0,
+            evolved_skills_dir=custom,
+            image_model_short="longcat",
+            benchmark="geneval2",
+        )
+        h = ClawHarness(minimal_workflow, cfg)
+        assert h.evolved_skills_dir == custom
+
+    def test_auto_derived_from_short_and_bench(self, minimal_workflow: dict) -> None:
+        from comfyclaw.skill_manager import evolved_dir_for
+
+        cfg = HarnessConfig(
+            api_key="x", sync_port=0,
+            image_model_short="longcat",
+            benchmark="geneval2",
+            agent_name="gpt-5-4",
+        )
+        h = ClawHarness(minimal_workflow, cfg)
+        assert h.evolved_skills_dir == str(evolved_dir_for("longcat", "geneval2", "gpt-5-4"))
+        assert h.image_model_short == "longcat"
+
+    def test_no_hints_disables(self, minimal_workflow: dict) -> None:
+        cfg = HarnessConfig(api_key="x", sync_port=0)
+        h = ClawHarness(minimal_workflow, cfg)
+        assert h.evolved_skills_dir is None
+
+    def test_short_inferred_from_image_model(self, minimal_workflow: dict) -> None:
+        from comfyclaw.skill_manager import evolved_dir_for
+
+        cfg = HarnessConfig(
+            api_key="x", sync_port=0,
+            image_model="qwen_image_2512_fp8_e4m3fn.safetensors",
+            benchmark="geneval2",
+        )
+        h = ClawHarness(minimal_workflow, cfg)
+        assert h.image_model_short == "qwen"
+        assert h.evolved_skills_dir == str(evolved_dir_for("qwen", "geneval2"))

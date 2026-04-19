@@ -494,10 +494,17 @@ def run_one(
     server_address: str = "127.0.0.1:8188",
     is_baseline: bool = False,
     skills_dir_override: str | None = None,
+    benchmark_short: str | None = None,
+    agent_name: str | None = None,
 ) -> dict:
     from comfyclaw.harness import ClawHarness, HarnessConfig
 
     t0 = time.time()
+    # Pass image_model_short / benchmark / agent_name so HarnessConfig can
+    # keep the (explicit path) and (auto-derived path) in sync via
+    # ``evolved_dir_for`` — and so the agent gets the right "model:<short>"
+    # include-tags for skill filtering.  For baseline runs we pass ""
+    # (empty string) to explicitly DISABLE evolved-skill loading.
     cfg = HarnessConfig(
         api_key=LLM_API_KEY,
         server_address=server_address,
@@ -508,7 +515,10 @@ def run_one(
         image_model=None,
         stage_gated=not is_baseline,
         skills_dir=skills_dir_override or SKILLS_DIR,
-        evolved_skills_dir=None if is_baseline else paths["evolved_skills_dir"],
+        evolved_skills_dir="" if is_baseline else paths["evolved_skills_dir"],
+        image_model_short=model_config["short_name"],
+        benchmark=benchmark_short,
+        agent_name=agent_name,
         max_nodes=20,
         baseline_first=warm_start and not is_baseline,
         max_images=max_iterations + 2,
@@ -660,8 +670,19 @@ def run_one(
 
 # ── Batch skill evolution ─────────────────────────────────────────────────
 
-def run_batch_evolution(results: list[dict], cycle: int, evolved_dir: str) -> None:
+def run_batch_evolution(
+    results: list[dict],
+    cycle: int,
+    evolved_dir: str,
+    model_short: str,
+    benchmark_short: str,
+    agent_name: str | None = None,
+) -> None:
     from comfyclaw.evolve import SkillEvolver
+
+    auto_tags = [f"model:{model_short}", f"bench:{benchmark_short}"]
+    if agent_name:
+        auto_tags.append(f"agent:{agent_name}")
 
     evolver = SkillEvolver(
         evolved_skills_dir=evolved_dir,
@@ -669,6 +690,7 @@ def run_batch_evolution(results: list[dict], cycle: int, evolved_dir: str) -> No
         api_key=LLM_API_KEY,
         min_improvement=0.02,
         max_mutations_per_cycle=3,
+        auto_tags=auto_tags,
     )
     report = evolver.run_cycle(results, cycle=cycle)
     log.info("  Evolution cycle %d: %s", cycle, report.summary())
@@ -850,6 +872,8 @@ def main():
                 server_address=server_address,
                 is_baseline=is_baseline,
                 skills_dir_override=SKILLS_DIR_OVERRIDE,
+                benchmark_short=bench_config["short_name"],
+                agent_name=agent_name,
             )
             with results_lock:
                 results.append(r)
@@ -952,8 +976,14 @@ def main():
                      total_since_evolve, evolve_cycle)
             log.info("=" * 60)
             try:
-                run_batch_evolution(results, cycle=evolve_cycle,
-                                    evolved_dir=paths["evolved_skills_dir"])
+                run_batch_evolution(
+                    results,
+                    cycle=evolve_cycle,
+                    evolved_dir=paths["evolved_skills_dir"],
+                    model_short=model_config["short_name"],
+                    benchmark_short=bench_config["short_name"],
+                    agent_name=agent_name,
+                )
             except Exception as exc:
                 log.error("Skill evolution failed: %s", exc, exc_info=True)
             total_since_evolve = 0

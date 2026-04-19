@@ -1,0 +1,18 @@
+# Arch descriptor for ComfyClaw's ARCH_REGISTRY.
+# Adding a new image model = dropping a skills/<slug>/arch.yaml like this one.
+#
+# ``registry_name`` is the key used by ARCH_REGISTRY[...] lookups.
+# ``skill_name`` defaults to this directory name so you never need to repeat it.
+
+registry_name: qwen_image
+description: "Qwen-Image-2512 (20B MMDiT — LoraLoaderModelOnly for LoRA)"
+
+detection:
+  unet_keywords: ["qwen_image"]
+  node_classes: ["QwenImageModelLoader", "RH_QwenImageGenerator"]
+  clip_type_keywords: ["qwen_image"]
+
+lora:
+  node: "LoraLoaderModelOnly"
+  needs_clip: false
+  supported: true

@@ -30,9 +30,32 @@ from .agent import ClawAgent
 from .client import ComfyClient
 from .experience_db import ExperienceDB
 from .memory import ClawMemory
+from .skill_manager import evolved_dir_for
 from .sync_server import SyncServer
 from .verifier import ClawVerifier, VerifierResult
 from .workflow import WorkflowManager
+
+# Map from ``image_model`` keyword → short tag used both for auto-deriving
+# ``evolved_skills_dir`` (via :func:`evolved_dir_for`) and for
+# ``model:<short>`` include-tag filtering in the agent system prompt.
+# Keep in sync with ``ClawAgent.plan_and_patch``'s keyword table.
+_IMAGE_MODEL_KEYWORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("longcat",), "longcat"),
+    (("qwen",), "qwen"),
+    (("z_image", "z-image"), "z-image-turbo"),
+    (("dreamshaper",), "dreamshaper"),
+)
+
+
+def _infer_image_model_short(image_model: str | None) -> str | None:
+    """Derive a model short tag from an ``image_model`` filename/path."""
+    if not image_model:
+        return None
+    low = image_model.lower()
+    for keywords, short in _IMAGE_MODEL_KEYWORDS:
+        if any(kw in low for kw in keywords):
+            return short
+    return None
 
 # Error messages that indicate a transient infrastructure fault in ComfyUI
 # (broken pipe from tqdm/progress-bar writing to a closed stderr, etc.).
@@ -69,6 +92,32 @@ class HarnessConfig:
     success_threshold     : Stop early when verifier score reaches this value.
     sync_port             : WebSocket port for live UI sync; 0 to disable.
     skills_dir            : Path to SKILL.md directory; ``None`` uses built-in skills.
+    evolved_skills_dir    : Where per-(model, benchmark, agent) evolved skills are
+                            read from.  Resolution precedence:
+                              * ``""`` → evolved skills disabled.
+                              * explicit path → used verbatim.
+                              * ``None`` + ``image_model_short`` + ``benchmark``
+                                supplied → auto-derived via
+                                :func:`comfyclaw.skill_manager.evolved_dir_for`
+                                (i.e. ``evolved_skills/<model>_<bench>[/<agent>]``).
+                              * ``None`` and no short names → no evolved skills loaded
+                                (pre-defined skills only).
+                            This is the **single source of truth** for where the
+                            agent and the :class:`SkillEvolver` read/write evolved
+                            skills — both sides now flow through the same helper.
+    image_model_short     : Short tag for the image model (e.g. ``"longcat"``,
+                            ``"qwen"``, ``"z-image-turbo"``).  Used for
+                            auto-deriving ``evolved_skills_dir`` and for injecting
+                            ``model:<short>`` tags into the system-prompt skill
+                            filter.  If omitted, it is inferred from ``image_model``
+                            via keyword matching.
+    benchmark             : Benchmark short name (e.g. ``"geneval2"``,
+                            ``"dpg-bench"``) used for per-benchmark skill
+                            partitioning.  Required together with
+                            ``image_model_short`` for auto-derivation.
+    agent_name            : Optional agent/LLM slug used to further partition
+                            evolved skills when multiple agents share the same
+                            (model, bench) pair (e.g. ``"gpt-5-4"``).
     evolve_from_best      : Start each iteration from the best previous workflow.
     max_images            : Max images kept in RAM across attempts (see ClawMemory).
     score_weights         : ``(req_weight, detail_weight)`` for verifier score blend.
@@ -92,12 +141,19 @@ class HarnessConfig:
     sync_port: int = 8765
     skills_dir: str | None = None
     evolved_skills_dir: str | None = None
+    image_model_short: str | None = None
+    benchmark: str | None = None
+    agent_name: str | None = None
     evolve_from_best: bool = True
     max_images: int = 5
     score_weights: tuple[float, float] = field(default_factory=lambda: (0.6, 0.4))
     image_model: str | None = None
     max_repair_attempts: int = 2
     verifier_mode: str = "vlm"  # "vlm", "human", or "hybrid"
+    # Batch verifier: collapse the per-question yes/no vision calls + the
+    # detailed-analysis call into ONE unified call (2 + N → 1 + 1 LLM calls,
+    # image uploaded once).  Set False to keep the legacy parallel path.
+    verifier_batch_mode: bool = True
     stage_gated: bool = False
     max_nodes: int = 20
     complexity_penalty: float = 0.02
@@ -227,15 +283,40 @@ class ClawHarness:
 
         self.on_status: _StatusCallback | None = None
 
+        # Resolve the evolved-skills directory once, here, so ClawAgent /
+        # SkillManager / SkillEvolver all see the same path regardless of how
+        # the caller constructed the HarnessConfig.
+        resolved_image_short = config.image_model_short or _infer_image_model_short(
+            config.image_model
+        )
+        self._image_model_short: str | None = resolved_image_short
+        self._benchmark: str | None = config.benchmark
+        self._agent_name: str | None = config.agent_name
+
+        if config.evolved_skills_dir == "":
+            resolved_evolved_dir: str | None = ""  # explicit disable
+        elif config.evolved_skills_dir is not None:
+            resolved_evolved_dir = config.evolved_skills_dir
+        elif resolved_image_short and config.benchmark:
+            resolved_evolved_dir = str(
+                evolved_dir_for(resolved_image_short, config.benchmark, config.agent_name)
+            )
+        else:
+            resolved_evolved_dir = None  # no per-bench partitioning available
+        self._evolved_skills_dir: str | None = resolved_evolved_dir
+
         self._agent = ClawAgent(
             api_key=config.api_key,
             model=config.model,
             server_address=config.server_address,
             skills_dir=config.skills_dir,
-            evolved_skills_dir=config.evolved_skills_dir,
+            evolved_skills_dir=resolved_evolved_dir,
             on_change=self._on_workflow_change,
             pinned_image_model=config.image_model,
             stage_gated=config.stage_gated,
+            image_model_short=resolved_image_short,
+            benchmark=config.benchmark,
+            agent_name=config.agent_name,
         )
         self._agent.on_agent_event = self._on_agent_event
         self._current_iteration = 0
@@ -245,6 +326,7 @@ class ClawHarness:
             api_key=config.api_key,
             model=config.verifier_model or config.model,
             score_weights=config.score_weights,
+            batch_mode=config.verifier_batch_mode,
         )
 
         mode = config.verifier_mode
@@ -271,6 +353,20 @@ class ClawHarness:
         else:
             self._verifier = vlm_verifier
             log.info("Verifier mode: vlm")
+
+    # ------------------------------------------------------------------
+    # Introspection
+    # ------------------------------------------------------------------
+
+    @property
+    def evolved_skills_dir(self) -> str | None:
+        """Resolved directory from which evolved skills are loaded, if any."""
+        return self._evolved_skills_dir
+
+    @property
+    def image_model_short(self) -> str | None:
+        """Short model tag used for skill partitioning (may be inferred)."""
+        return self._image_model_short
 
     # ------------------------------------------------------------------
     # Context manager

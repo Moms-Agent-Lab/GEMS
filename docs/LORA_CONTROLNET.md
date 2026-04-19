@@ -13,7 +13,8 @@ evolves, across four architecture families:
 You always call the **same agent tool** (`add_lora_loader`). The harness
 detects the active architecture from the workflow graph (checkpoint filename,
 `CLIPLoader.type`, custom loader `class_type`) and dispatches to the correct
-node automatically. See `ARCH_REGISTRY` in `comfyclaw/agent.py` for the
+node automatically. See `comfyclaw/skills/<arch>/arch.yaml` (loaded into
+`ARCH_REGISTRY` in `comfyclaw/agent.py`) for the
 detection rules.
 
 ---
@@ -167,7 +168,8 @@ Both scripts honour `COMFYUI_ADDR` from `.env` (default `127.0.0.1:8188`).
 
 ## 7. Reference: where this is implemented
 
-- `comfyclaw/agent.py` — `ARCH_REGISTRY`, `_detect_arch`, `_add_lora`
+- `comfyclaw/skills/<arch>/arch.yaml` — per-model registry entries (detection + LoRA config)
+- `comfyclaw/agent.py` — `ARCH_REGISTRY = load_arch_registry()`, `_detect_arch`, `_add_lora`
 - `comfyclaw/skills/lora-enhancement/SKILL.md` — agent-facing playbook
 - `comfyclaw/skills/qwen-image-2512/SKILL.md` — full Qwen recipe
 - `comfyclaw/skills/z-image-turbo/SKILL.md` — full Z-Image recipe

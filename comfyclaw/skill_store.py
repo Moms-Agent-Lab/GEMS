@@ -49,9 +49,12 @@ class SkillStore:
         description: str,
         body: str,
         metadata: dict[str, str] | None = None,
+        tags: list[str] | None = None,
     ) -> Path:
         """Create a new skill directory with a SKILL.md file.
 
+        The ``tags`` list is written into the frontmatter verbatim (after
+        deduplication and ``"agent"`` auto-injection, see :meth:`_normalize_tags`).
         Raises ``FileExistsError`` if the skill already exists.
         """
         skill_dir = self.root / name
@@ -59,7 +62,9 @@ class SkillStore:
             raise FileExistsError(f"Skill {name!r} already exists at {skill_dir}")
 
         skill_dir.mkdir(parents=True)
-        content = self._build_skill_md(name, description, body, metadata)
+        content = self._build_skill_md(
+            name, description, body, metadata, self._normalize_tags(tags)
+        )
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(content, encoding="utf-8")
         self._snapshot(name, "v1")
@@ -71,17 +76,19 @@ class SkillStore:
         description: str | None = None,
         body: str | None = None,
         metadata: dict[str, str] | None = None,
+        tags: list[str] | None = None,
     ) -> Path:
         """Update an existing skill, snapshotting the old version first.
 
         Only the provided fields are updated; ``None`` means keep existing.
+        Tag semantics: when ``tags`` is given, the union of existing tags and
+        new tags is written back (tags accumulate, never silently removed).
         """
         skill_dir = self.root / name
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.exists():
             raise FileNotFoundError(f"Skill {name!r} not found at {skill_md}")
 
-        # Snapshot current version before modifying
         version = self._next_version(name)
         self._snapshot(name, version)
 
@@ -90,7 +97,13 @@ class SkillStore:
         new_body = body if body is not None else existing["body"]
         new_meta = metadata if metadata is not None else existing.get("metadata")
 
-        content = self._build_skill_md(name, new_desc, new_body, new_meta)
+        existing_tags = existing.get("tags") or []
+        if tags is None:
+            merged_tags = existing_tags or None
+        else:
+            merged_tags = self._normalize_tags(list(existing_tags) + list(tags))
+
+        content = self._build_skill_md(name, new_desc, new_body, new_meta, merged_tags)
         skill_md.write_text(content, encoding="utf-8")
         return skill_md
 
@@ -111,26 +124,40 @@ class SkillStore:
         merged_description: str,
         merged_body: str,
         delete_originals: bool = True,
+        tags: list[str] | None = None,
     ) -> Path:
         """Merge multiple skills into one new skill.
 
-        Snapshots all originals, creates the merged skill, and optionally
-        deletes the original skills.
+        The merged skill's tags default to the union of the originals' tags
+        (so model/bench partitioning is preserved across merges) plus any
+        explicit ``tags`` argument.
         """
         for name in names:
             skill_dir = self.root / name
             if not skill_dir.exists():
                 raise FileNotFoundError(f"Skill {name!r} not found")
 
-        # Snapshot all originals
+        # Collect union of existing tags before snapshotting so a merge
+        # doesn't silently lose the model:*/bench:* partitioning tags.
+        union_tags: list[str] = list(tags or [])
+        for name in names:
+            md = self.root / name / "SKILL.md"
+            if md.exists():
+                union_tags.extend(self._parse_existing(md).get("tags") or [])
+
         for name in names:
             version = self._next_version(name)
             self._snapshot(name, version, tag="pre-merge")
 
-        # Create merged skill
-        result = self.create_skill(merged_name, merged_description, merged_body)
+        # The merged destination may collide with one of the originals; if so,
+        # remove it first so create_skill can write cleanly.
+        if (self.root / merged_name).exists():
+            shutil.rmtree(self.root / merged_name, ignore_errors=True)
 
-        # Optionally remove originals
+        result = self.create_skill(
+            merged_name, merged_description, merged_body, tags=union_tags
+        )
+
         if delete_originals:
             for name in names:
                 if name != merged_name:
@@ -213,6 +240,29 @@ class SkillStore:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _normalize_tags(tags: list[str] | None) -> list[str]:
+        """Deduplicate, strip, and guarantee the ``agent`` tag is present.
+
+        Accepts messy input (``None``, whitespace, duplicates, tuples) and
+        returns a stable, sorted list.  ``"agent"`` is always included so the
+        skill is discoverable by :meth:`SkillManager.build_available_skills_xml`
+        which filters on ``include_tags={"agent", …}``.
+        """
+        seen: set[str] = set()
+        out: list[str] = []
+        for t in tags or []:
+            if t is None:
+                continue
+            t_clean = str(t).strip()
+            if not t_clean or t_clean in seen:
+                continue
+            seen.add(t_clean)
+            out.append(t_clean)
+        if "agent" not in seen:
+            out.append("agent")
+        return sorted(out)
+
     def _build_skill_md(
         self,
         name: str,
@@ -223,7 +273,6 @@ class SkillStore:
     ) -> str:
         """Generate SKILL.md content with YAML frontmatter."""
         lines = ["---", f"name: {name}"]
-        # Multi-line description uses YAML block scalar
         if "\n" in description or len(description) > 80:
             lines.append("description: >-")
             for dline in description.split("\n"):
@@ -235,7 +284,7 @@ class SkillStore:
             lines.append("metadata:")
             for k, v in sorted(metadata.items()):
                 lines.append(f"  {k}: \"{v}\"")
-        effective_tags = tags if tags is not None else ["agent"]
+        effective_tags = tags if tags else ["agent"]
         lines.append(f"tags: [{', '.join(effective_tags)}]")
         lines.append("---")
         lines.append("")
@@ -268,24 +317,28 @@ class SkillStore:
         return f"v{max_v + 1}"
 
     def _parse_existing(self, skill_md: Path) -> dict[str, Any]:
-        """Parse an existing SKILL.md into components."""
+        """Parse an existing SKILL.md into components (incl. tags list)."""
         import yaml
 
         content = skill_md.read_text(encoding="utf-8")
         if not content.startswith("---"):
-            return {"description": "", "body": content, "metadata": None}
+            return {"description": "", "body": content, "metadata": None, "tags": []}
 
         parts = content.split("---", 2)
         if len(parts) < 3:
-            return {"description": "", "body": content, "metadata": None}
+            return {"description": "", "body": content, "metadata": None, "tags": []}
 
         try:
             fm = yaml.safe_load(parts[1]) or {}
         except Exception:
             fm = {}
 
+        raw_tags = fm.get("tags")
+        tags = list(raw_tags) if isinstance(raw_tags, list) else []
+
         return {
             "description": str(fm.get("description", "")),
             "body": parts[2].strip(),
             "metadata": fm.get("metadata"),
+            "tags": tags,
         }

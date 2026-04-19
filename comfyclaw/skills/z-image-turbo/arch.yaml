@@ -1,0 +1,14 @@
+registry_name: z_image
+description: "Z-Image-Turbo (6B S3-DiT — LoraLoaderModelOnly for LoRA)"
+
+detection:
+  unet_keywords: ["z_image"]
+  node_classes: []
+  # Z-Image-Turbo's ComfyUI uses CLIPLoader type "lumina2"; some older forks
+  # still pin "qwen3_4b". Keep both keywords so detection is robust.
+  clip_type_keywords: ["lumina2", "qwen3_4b"]
+
+lora:
+  node: "LoraLoaderModelOnly"
+  needs_clip: false
+  supported: true

@@ -174,15 +174,26 @@ Mutation types:
 
 Return ONLY a JSON object (no markdown fences, no explanation before/after):
 {{
-  "mutation_type": "create|update|merge|delete",
+  "mutation_type": "create|update|merge|delete|reinforce",
   "target_skills": ["skill-name"],
   "rationale": "Why this mutation addresses the cluster",
   "proposed_changes": {{
     "name": "skill-name",
     "description": "One-line skill description (no newlines)",
-    "body": "Full SKILL.md body with instructions"
+    "body": "Full SKILL.md body with instructions",
+    "tags": ["optional", "extra", "tags"]
   }}
 }}
+
+Tag guidance:
+- ``proposed_changes.tags`` is OPTIONAL.  The runner will automatically attach
+  ``agent``, ``model:<short>``, and ``bench:<short>`` tags based on the current
+  run context — you do NOT need to include those.
+- Only add a tag here when it meaningfully narrows applicability, e.g.:
+  * ``"topic:counting"`` for counting-specific skills
+  * ``"topic:spatial"`` for spatial-layout skills
+  * ``"topic:text-rendering"`` for text-in-image skills
+- Never add tags that reference specific models/benchmarks — those are injected.
 
 Rules:
 - NEVER create a skill that restates what a built-in skill already covers. \
@@ -271,6 +282,13 @@ class SkillEvolver:
     baseline_nodes : Reference node count for complexity penalty.
     success_threshold : Minimum score to consider a result a "success" for
                         pattern extraction (default 0.9).
+    auto_tags :         Tags automatically attached to every evolved skill
+                        created/updated in this cycle (e.g.
+                        ``["model:longcat", "bench:geneval2"]``).  These are
+                        merged with any LLM-proposed tags and with the
+                        auto-injected ``"agent"`` tag.  This is what lets
+                        ``SkillManager.build_available_skills_xml`` filter
+                        evolved skills by ``model:<short>`` and ``bench:<short>``.
     """
 
     def __init__(
@@ -284,6 +302,7 @@ class SkillEvolver:
         complexity_penalty: float = 0.02,
         baseline_nodes: int = 10,
         success_threshold: float = 0.9,
+        auto_tags: list[str] | None = None,
     ) -> None:
         self.evolved_skills_dir = Path(evolved_skills_dir) if evolved_skills_dir else _EVOLVED_SKILLS_ROOT
         self.evolved_skills_dir.mkdir(parents=True, exist_ok=True)
@@ -296,6 +315,7 @@ class SkillEvolver:
         self.complexity_penalty = complexity_penalty
         self.baseline_nodes = baseline_nodes
         self.success_threshold = success_threshold
+        self.auto_tags: list[str] = list(auto_tags or [])
 
         if api_key:
             from .agent import _set_llm_api_key
@@ -387,9 +407,16 @@ class SkillEvolver:
                 test_prompts = self._generate_test_prompts(mutation, failure_clusters)
                 mutation.test_prompts = test_prompts
 
-        # Step 4: Apply and validate each mutation
+        # Step 4: Apply and validate each mutation.
+        #
+        # We advance ``running_baseline`` after every accepted mutation so the
+        # next mutation's ``improvement`` is measured against the NEW state of
+        # the skill library, not the (now stale) cycle-start baseline.  Without
+        # this, a single earlier boost would let subsequent no-op mutations
+        # clear ``min_improvement`` for free.
         accepted = 0
         rejected = 0
+        running_baseline = pre_mean
         post_mean = pre_mean
         total_penalty = 0.0
 
@@ -409,23 +436,27 @@ class SkillEvolver:
                     total_penalty += penalty
 
                     mutation.post_score = adjusted_score
-                    improvement = adjusted_score - pre_mean
+                    improvement = adjusted_score - running_baseline
 
                     if improvement >= self.min_improvement:
                         mutation.accepted = True
                         accepted += 1
+                        running_baseline = adjusted_score
                         post_mean = adjusted_score
                         log.info(
                             "Mutation accepted: +%.4f (%.4f -> %.4f, penalty=%.4f)",
-                            improvement, pre_mean, adjusted_score, penalty,
+                            improvement, running_baseline - improvement,
+                            adjusted_score, penalty,
                         )
                         self.skill_manager = SkillManager(evolved_skills_dir=str(self.evolved_skills_dir))
                     else:
                         self._rollback_mutation(mutation)
                         rejected += 1
                         log.info(
-                            "Mutation rejected: improvement %.4f < threshold %.4f",
+                            "Mutation rejected: improvement %.4f < threshold %.4f "
+                            "(baseline=%.4f, adjusted=%.4f)",
                             improvement, self.min_improvement,
+                            running_baseline, adjusted_score,
                         )
                 else:
                     if self._verify_mutation_on_disk(mutation):
@@ -641,8 +672,20 @@ class SkillEvolver:
     def _propose_reinforce_mutation(
         self, cluster: SuccessCluster
     ) -> MutationProposal | None:
-        """Ask the LLM to propose a 'reinforce' mutation from a success cluster."""
+        """Ask the LLM to propose a 'reinforce' mutation from a success cluster.
+
+        Only evolved skills may be modified (built-in skills are authoritative).
+        If the cluster points at a BUILT-IN skill via ``existing_skill``, we
+        coerce ``mutation_type`` to ``create`` so the new evolved skill
+        complements (rather than tries to update) the built-in one.  If it
+        points at an EVOLVED skill, we coerce to ``update`` and lock the
+        target so the LLM can't accidentally spawn a duplicate.
+        """
         builtin_manifest, evolved_manifest = self._build_split_manifest()
+
+        existing = cluster.existing_skill
+        existing_is_evolved = bool(existing) and existing in self.skill_manager.evolved_skill_names
+        existing_is_builtin = bool(existing) and not existing_is_evolved
 
         cluster_json = json.dumps({
             "name": cluster.name,
@@ -652,28 +695,59 @@ class SkillEvolver:
             "mean_score": cluster.mean_score,
             "key_tools": cluster.key_tools,
             "example_strategies": cluster.example_strategies,
-            "existing_skill": cluster.existing_skill,
+            "existing_skill": existing,
+            "existing_skill_kind": (
+                "evolved" if existing_is_evolved
+                else "builtin" if existing_is_builtin
+                else None
+            ),
             "affected_prompts": cluster.affected_prompts[:5],
         }, indent=2)
+
+        guidance = (
+            "\n\nThis cluster represents SUCCESSFUL strategies, not failures. "
+            "Prefer mutation_type 'reinforce' to codify what worked."
+        )
+        if existing_is_evolved:
+            guidance += (
+                f"\nAn EVOLVED skill named '{existing}' already partially covers this — "
+                "use mutation_type='update' with target_skills=['{existing}'] "
+                "to strengthen it, do not create a duplicate."
+            ).format(existing=existing)
+        elif existing_is_builtin:
+            guidance += (
+                f"\nThe BUILT-IN skill '{existing}' already covers this domain. "
+                "Built-in skills are authoritative and must not be modified. "
+                "Use mutation_type='create' to add a NARROW evolved skill whose "
+                f"body starts with '## Complements\\nRead `{existing}` first.'"
+            )
 
         prompt = _PROPOSE_MUTATION_PROMPT.format(
             cluster_json=cluster_json,
             builtin_skills_manifest=builtin_manifest,
             evolved_skills_manifest=evolved_manifest,
-        ) + (
-            "\n\nThis cluster represents SUCCESSFUL strategies, not failures. "
-            "Prefer mutation_type 'reinforce' to codify what worked. "
-            "If an existing skill already partially covers this, use 'update' to "
-            "strengthen it with the proven techniques."
-        )
+        ) + guidance
 
         data = self._llm_json_call(prompt, max_tokens=4000, expect_array=False)
         if data is None:
             return None
 
+        mutation_type = data.get("mutation_type", "reinforce")
+        target_skills = data.get("target_skills", []) or []
+
+        # Enforce the constraints described in the docstring even if the LLM
+        # disregarded the guidance above.
+        if existing_is_evolved:
+            mutation_type = "update"
+            target_skills = [existing]
+        elif existing_is_builtin and mutation_type in ("update", "merge", "delete"):
+            # Never touch the built-in skill — fall back to a complementary create.
+            mutation_type = "create"
+            target_skills = []
+
         return MutationProposal(
-            mutation_type=data.get("mutation_type", "reinforce"),
-            target_skills=data.get("target_skills", []),
+            mutation_type=mutation_type,
+            target_skills=target_skills,
             rationale=data.get("rationale", ""),
             failure_cluster=cluster.name,
             proposed_changes=data.get("proposed_changes", {}),
@@ -745,10 +819,23 @@ class SkillEvolver:
     # Private: apply / rollback mutations
     # ------------------------------------------------------------------
 
+    def _effective_tags(self, mutation: MutationProposal) -> list[str]:
+        """Merge ``auto_tags`` (from the runner) with the LLM's proposed tags.
+
+        The ``SkillStore`` always re-injects ``"agent"``, but we still include
+        any partition tags here so the stored SKILL.md has
+        ``tags: [agent, model:<short>, bench:<short>, topic:<whatever>]``.
+        """
+        proposed = mutation.proposed_changes.get("tags") or []
+        if not isinstance(proposed, (list, tuple)):
+            proposed = []
+        return list(self.auto_tags) + [str(t) for t in proposed]
+
     def _apply_mutation(self, mutation: MutationProposal) -> None:
         """Apply a mutation to the skill store."""
         changes = mutation.proposed_changes
         mt = mutation.mutation_type
+        effective_tags = self._effective_tags(mutation)
 
         if mt in ("create", "reinforce"):
             skill_name = changes.get("name", f"auto-{mutation.failure_cluster}")
@@ -758,6 +845,7 @@ class SkillEvolver:
                     name=skill_name,
                     description=changes.get("description"),
                     body=changes.get("body"),
+                    tags=effective_tags,
                 )
             else:
                 origin = "self-evolve-success" if mt == "reinforce" else "self-evolve"
@@ -766,6 +854,7 @@ class SkillEvolver:
                     description=changes.get("description", "Auto-generated skill"),
                     body=changes.get("body", ""),
                     metadata={"origin": origin, "cluster": mutation.failure_cluster},
+                    tags=effective_tags,
                 )
 
         elif mt == "update":
@@ -774,6 +863,7 @@ class SkillEvolver:
                     name=skill_name,
                     description=changes.get("description"),
                     body=changes.get("body"),
+                    tags=effective_tags,
                 )
 
         elif mt == "merge":
@@ -783,6 +873,7 @@ class SkillEvolver:
                 merged_description=changes.get("description", "Merged skill"),
                 merged_body=changes.get("body", ""),
                 delete_originals=True,
+                tags=effective_tags,
             )
 
         elif mt == "delete":

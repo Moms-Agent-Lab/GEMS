@@ -527,6 +527,7 @@ def _cmd_evolve(args: argparse.Namespace) -> None:
     import logging
 
     from .evolve import SkillEvolver
+    from .skill_manager import _EVOLVED_SKILLS_ROOT, evolved_dir_for
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -536,12 +537,42 @@ def _cmd_evolve(args: argparse.Namespace) -> None:
     with open(args.results, "r", encoding="utf-8") as f:
         results = json.load(f)
 
-    evolved_dir = args.evolved_skills_dir or str(
-        Path(__file__).resolve().parent / "skills_evolved"
-    )
+    # Resolve evolved_skills_dir via the single source of truth
+    # (``evolved_dir_for``) so the CLI writes into the same
+    # ``evolved_skills/<model>_<bench>[/<agent>]`` layout that
+    # ``run_benchmark.py`` and the runtime ``SkillManager`` read from.
+    if args.evolved_skills_dir:
+        evolved_dir = args.evolved_skills_dir
+    elif args.model_short and args.benchmark:
+        evolved_dir = str(
+            evolved_dir_for(args.model_short, args.benchmark, args.agent_name or None)
+        )
+    else:
+        evolved_dir = str(_EVOLVED_SKILLS_ROOT)
+        print(
+            f"[cli] WARNING: no --model-short/--benchmark given; writing evolved "
+            f"skills to the shared root {evolved_dir}. These will NOT be loaded "
+            "by SkillManager unless you also pass --evolved-skills-dir when "
+            "running the harness, because runtime loading requires per-(model, "
+            "benchmark) partitioning. Pass --model-short and --benchmark to "
+            "enable automatic loading.",
+        )
+
+    print(f"[cli] Evolved skills dir: {evolved_dir}")
+
+    # Derive the same auto-tags the benchmark runner uses so evolved skills
+    # stay per-(model, benchmark, agent) searchable via include_tags.
+    auto_tags: list[str] = []
+    if args.model_short:
+        auto_tags.append(f"model:{args.model_short}")
+    if args.benchmark:
+        auto_tags.append(f"bench:{args.benchmark}")
+    if args.agent_name:
+        auto_tags.append(f"agent:{args.agent_name}")
 
     evolver = SkillEvolver(
         evolved_skills_dir=evolved_dir,
+        auto_tags=auto_tags,
         llm_model=args.model,
         api_key=_api_key(),
         min_improvement=args.min_improvement,
@@ -744,8 +775,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     evolve_p.add_argument("--results", required=True, help="Path to benchmark results.json")
     evolve_p.add_argument("--evolved-skills-dir", default=None,
-                          help="Directory for evolved skills (default: comfyclaw/skills_evolved/)")
-    evolve_p.add_argument("--model", default=_env_str("COMFYCLAW_MODEL", "anthropic/claude-sonnet-4-5"))
+                          help="Directory for evolved skills. If omitted, derived via "
+                               "evolved_dir_for(--model-short, --benchmark, --agent-name) "
+                               "i.e. comfyclaw/evolved_skills/<model>_<bench>[/<agent>]/. "
+                               "If neither is given, falls back to the shared "
+                               "evolved_skills/ root (runtime will NOT auto-load these).")
+    evolve_p.add_argument("--model-short", default=None,
+                          help="Image-model short name (e.g. 'longcat', 'qwen'). "
+                               "Required together with --benchmark for the default "
+                               "per-(model, benchmark) partitioned layout.")
+    evolve_p.add_argument("--benchmark", default=None,
+                          help="Benchmark short name (e.g. 'geneval2', 'dpg-bench').")
+    evolve_p.add_argument("--agent-name", default=None,
+                          help="Optional agent/LLM slug for further partitioning "
+                               "(e.g. 'gpt-5-4').")
+    evolve_p.add_argument("--model", default=_env_str("COMFYCLAW_MODEL", "anthropic/claude-sonnet-4-5"),
+                          help="LLM model name used for proposing mutations.")
     evolve_p.add_argument("--max-cycles", type=int, default=5)
     evolve_p.add_argument("--min-improvement", type=float, default=0.02)
     evolve_p.add_argument("--max-mutations", type=int, default=3)

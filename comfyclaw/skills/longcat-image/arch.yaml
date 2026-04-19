@@ -1,0 +1,15 @@
+registry_name: longcat_image
+description: >-
+  LongCat-Image (6B by Meituan — custom pipeline nodes:
+  LongCatImageModelLoader → LongCatImageTextToImage; use set_param for
+  steps/guidance_scale; LoRA is not available via standard tools for this arch)
+
+detection:
+  unet_keywords: ["longcat"]
+  node_classes: ["LongCatImageModelLoader"]
+  clip_type_keywords: []
+
+lora:
+  node: ""
+  needs_clip: false
+  supported: false
