@@ -41,6 +41,10 @@ It requires ~17 GB VRAM (BF16) or CPU offload.
 | Resolution | 512/1024 | 1328×1328 | 1024×1024 | **1024×1024** |
 | LoRA | yes | yes | yes | **not supported** |
 
+> **Note on LoRA tools:** Calling `add_lora_loader` while LongCat-Image is the
+> active model returns an informative error and does NOT modify the workflow.
+> Use `set_param` and prompt engineering instead — see §6/§7.
+
 ---
 
 ## 1. Node graph structure

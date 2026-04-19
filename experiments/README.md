@@ -77,8 +77,12 @@ python experiments/run_benchmark.py \
 
 ### Run baseline model
 ```
+# download benchmark data
+python experiments/setup.py --benchmark oneig-en --comfyui-dir /fs/nexus-scratch/zli12321/self-evolving-UI/ComfyUI
+
 # Claude
 python experiments/run_benchmark.py --model longcat --benchmark geneval2 --baseline --parallel 5
+
 
 # GPT-5.4
 LLM_MODEL="openai/gpt-5.4" \
