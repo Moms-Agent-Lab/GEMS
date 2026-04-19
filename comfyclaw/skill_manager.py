@@ -29,11 +29,54 @@ from typing import NamedTuple
 import yaml
 
 # ---------------------------------------------------------------------------
-# Built-in skills directory
+# Built-in + evolved skills directory layout
 # ---------------------------------------------------------------------------
+#
+# Evolved skills are written per (model, benchmark) pair by the benchmark
+# runner, following the convention::
+#
+#     comfyclaw/evolved_skills/<model_short>_<bench_short>/[<agent_slug>/]<skill>/SKILL.md
+#
+# e.g. ``evolved_skills/longcat_geneval2/`` contains skills LongCat learned on
+# GenEval2 and must *not* be loaded when the agent is pinned to Qwen or
+# running on DPG-Bench.  Use :func:`evolved_dir_for` (below) as the single
+# source of truth for this naming convention.
 
 _BUILTIN_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
-_EVOLVED_SKILLS_DIR = Path(__file__).resolve().parent / "skills_evolved"
+_EVOLVED_SKILLS_ROOT = Path(__file__).resolve().parent / "evolved_skills"
+
+
+def evolved_dir_for(
+    model: str,
+    benchmark: str,
+    agent_name: str | None = None,
+    root: str | Path | None = None,
+) -> Path:
+    """Return the evolved-skills directory for a given (model, benchmark) pair.
+
+    Parameters
+    ----------
+    model :
+        Model short name (e.g. ``"longcat"``, ``"qwen"``, ``"z-image-turbo"``),
+        as declared in ``experiments/models/<model>.yaml`` under ``short_name``.
+    benchmark :
+        Benchmark short name (e.g. ``"geneval2"``, ``"dpg-bench"``).
+    agent_name :
+        Optional LLM/agent slug used to sub-partition evolved skills between
+        agents that may have different strengths (e.g. ``"gpt-5-4"``).  When
+        ``None`` (the default), returns the shared bench directory.
+    root :
+        Base directory containing the per-bench sub-folders.  Defaults to the
+        packaged ``comfyclaw/evolved_skills/`` location.
+
+    The returned path is not required to exist — callers that load skills can
+    use :class:`SkillManager` which silently treats missing dirs as empty.
+    """
+    base = Path(root).resolve() if root else _EVOLVED_SKILLS_ROOT
+    leaf = base / f"{model}_{benchmark}"
+    if agent_name:
+        leaf = leaf / agent_name
+    return leaf
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +188,43 @@ def _parse_skill_md(skill_dir: Path) -> tuple[SkillProperties, str]:
     return props, body
 
 
+def _iter_skill_dirs(root: Path, max_depth: int = 4) -> list[Path]:
+    """Recursively find every directory under *root* that contains a SKILL.md.
+
+    A directory is treated as a *skill* directory as soon as it contains
+    ``SKILL.md`` (or ``skill.md``); recursion stops there.  Intermediate
+    directories that don't hold a SKILL.md — e.g. ``evolved_skills/<bench>/``
+    or ``evolved_skills/<bench>/<agent>/`` — are traversed transparently, so
+    layouts like::
+
+        evolved_skills/longcat_geneval2/api-retry/SKILL.md
+        evolved_skills/longcat_geneval2/gpt-5.4-smoke/my-skill/SKILL.md
+
+    are both discovered.  Hidden directories (``.versions/`` snapshots, etc.)
+    are skipped.  ``max_depth`` guards against runaway recursion / symlink
+    cycles.
+    """
+    results: list[Path] = []
+
+    def _walk(current: Path, depth: int) -> None:
+        if depth > max_depth or not current.is_dir():
+            return
+        try:
+            entries = sorted(current.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            if (entry / "SKILL.md").exists() or (entry / "skill.md").exists():
+                results.append(entry)
+            else:
+                _walk(entry, depth + 1)
+
+    _walk(root, 0)
+    return results
+
+
 # ---------------------------------------------------------------------------
 # SkillManager
 # ---------------------------------------------------------------------------
@@ -171,24 +251,48 @@ class SkillManager:
         ``None`` to use the built-in skills bundled with the package.
     evolved_skills_dir :
         Path to evolved/learned skills that are generated during benchmarks
-        and self-evolution cycles.  Pass ``None`` to use the built-in
-        ``skills_evolved/`` directory.  Set to ``""`` to disable.
+        and self-evolution cycles.  When provided, this path is loaded
+        verbatim.  Set to ``""`` to explicitly disable.  Default ``None``
+        loads no evolved skills **unless** ``model`` + ``benchmark`` are
+        supplied (see below).
+    model, benchmark :
+        Convenience: when both are supplied and ``evolved_skills_dir`` is
+        not, the evolved directory is resolved via :func:`evolved_dir_for`
+        to ``comfyclaw/evolved_skills/<model>_<benchmark>/``.  This is how
+        evolved skills stay partitioned by the (model, bench) pair that
+        produced them — e.g. ``SkillManager(model="longcat", benchmark="geneval2")``
+        loads only the LongCat-on-GenEval2 skills, not LongCat-on-DPG-Bench
+        or Qwen-on-GenEval2.
+    agent_name :
+        Optional LLM/agent slug; if supplied together with ``model`` +
+        ``benchmark``, picks the per-agent sub-folder.
     """
 
     def __init__(
         self,
         skills_dir: str | Path | None = None,
         evolved_skills_dir: str | Path | None = None,
+        *,
+        model: str | None = None,
+        benchmark: str | None = None,
+        agent_name: str | None = None,
     ) -> None:
         root = Path(skills_dir) if skills_dir else _BUILTIN_SKILLS_DIR
         self._root = root.resolve()
 
+        # Resolve evolved_skills_dir with the following precedence:
+        #   explicit ""                    → disabled
+        #   explicit path                  → use verbatim
+        #   model + benchmark supplied     → derive via evolved_dir_for()
+        #   otherwise                      → disabled (no silent pan-bench load)
         if evolved_skills_dir == "":
             self._evolved_root: Path | None = None
         elif evolved_skills_dir is not None:
             self._evolved_root = Path(evolved_skills_dir).resolve()
+        elif model and benchmark:
+            self._evolved_root = evolved_dir_for(model, benchmark, agent_name).resolve()
         else:
-            self._evolved_root = _EVOLVED_SKILLS_DIR.resolve()
+            self._evolved_root = None
 
         self._cache: dict[str, tuple[SkillProperties, str]] = {}
         self._props: dict[str, SkillProperties] = {}
@@ -203,8 +307,15 @@ class SkillManager:
         """Load all skills from the primary and evolved directories.
 
         Evolved skills are loaded second; if an evolved skill has the same
-        name as a pre-defined one, the evolved version takes precedence.
+        name as a pre-defined one, the evolved version takes precedence
+        (and a warning is emitted so silent overrides are visible).
+
+        Both roots are walked recursively via :func:`_iter_skill_dirs`, so
+        nested layouts such as ``evolved_skills/<bench>/<agent>/<skill>/``
+        are supported transparently.
         """
+        import warnings
+
         dirs: list[tuple[Path, bool]] = [(self._root, False)]
         if self._evolved_root and self._evolved_root.is_dir():
             dirs.append((self._evolved_root, True))
@@ -212,22 +323,25 @@ class SkillManager:
         for root, is_evolved in dirs:
             if not root.is_dir():
                 continue
-            for skill_dir in sorted(root.iterdir()):
-                if not skill_dir.is_dir() or skill_dir.name.startswith("."):
-                    continue
+            for skill_dir in _iter_skill_dirs(root):
                 try:
                     props, body = _parse_skill_md(skill_dir)
                     if is_evolved and not props.tags:
                         props = props._replace(tags=["agent"])
+                    if is_evolved and props.name in self._props and props.name not in self._evolved_names:
+                        warnings.warn(
+                            f"[SkillManager] evolved skill {props.name!r} "
+                            f"overrides built-in at {skill_dir}",
+                            stacklevel=2,
+                        )
                     self._cache[props.name] = (props, body)
                     self._props[props.name] = props
                     if is_evolved:
                         self._evolved_names.add(props.name)
                 except ValueError as exc:
-                    import warnings
-
                     warnings.warn(
-                        f"[SkillManager] Skipping skill {skill_dir.name}: {exc}", stacklevel=2
+                        f"[SkillManager] Skipping skill at {skill_dir}: {exc}",
+                        stacklevel=2,
                     )
 
     # ------------------------------------------------------------------

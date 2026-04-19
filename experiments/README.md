@@ -215,6 +215,75 @@ For example, `--model longcat --benchmark dpg-bench` with `LLM_MODEL=anthropic/c
 
 Override the output root with `EXPERIMENTS_ROOT` env var, or individual dirs with `OUTPUT_DIR` / `DETAILED_DIR`.
 
+### Evolved skills: running so they actually get applied
+
+The runner has a built-in evolve → re-apply loop. On each call, the agent
+loads **only** the evolved skills produced by the same `(model, benchmark)`
+pair (and, if set, the same `agent_name`). This isolation is why you see
+e.g. `evolved_skills/longcat_geneval2/` separate from `longcat_dpg-bench/`
+— skills learned on one bench don't leak into another.
+
+**Step 1 — enable evolution.** Evolution is off by default. Turn it on
+with `--evolve-batch-size N` (evolves after every `N` prompts):
+
+```bash
+python experiments/run_benchmark.py \
+    --model longcat --benchmark geneval2 \
+    --max-iterations 4 --evolve-batch-size 5 --parallel 5
+```
+
+During the run, `SkillEvolver` clusters failures, proposes new/updated
+skills, validates them against a held-out mini-batch, and writes accepted
+ones to `comfyclaw/evolved_skills/{model}_{benchmark}/{agent_name}/<skill>/SKILL.md`.
+
+**Step 2 — re-run and the skills load automatically.** The next invocation
+with the same `--model` and `--benchmark` (and same `LLM_MODEL` / `--agent-name`)
+picks them up without any extra flags:
+
+```bash
+# Same flags as step 1 — the agent now sees the skills produced last time.
+python experiments/run_benchmark.py \
+    --model longcat --benchmark geneval2 \
+    --max-iterations 4 --evolve-batch-size 5 --parallel 5
+```
+
+Internally, `run_benchmark.py::_build_paths()` calls
+`comfyclaw.evolved_dir_for(model, benchmark, agent_name)`, which is the
+single source of truth for the `{model}_{benchmark}/{agent_name}` convention,
+and passes the result as `evolved_skills_dir` to `ClawAgent` / `SkillEvolver`.
+
+**Step 3 — verify they were loaded.** At startup the runner prints the
+directory it will read from; also grep the log for loaded skills:
+
+```bash
+python experiments/run_benchmark.py --model longcat --benchmark geneval2 \
+    --prompt "debug prompt" 2>&1 | grep -E "Evolved skills|read_skill"
+
+# Or inspect the XML the agent actually receives:
+python3 -c "
+from comfyclaw import SkillManager
+sm = SkillManager(model='longcat', benchmark='geneval2')
+print('loaded evolved:', sorted(sm.evolved_skill_names))
+print(sm.build_available_skills_xml(include_tags={'agent', 'model:longcat'}))
+"
+```
+
+**Pitfalls.** An evolved skill will silently not apply if any of these are true:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Skill not in `evolved_skill_names` | `(model, benchmark, agent_name)` doesn't match the dir that wrote it | Re-run with the *exact* same flags used for evolve |
+| Warning `"Skipping skill at ..."` | Malformed SKILL.md (missing frontmatter / `name` mismatches dir) | Delete the bad dir; re-evolve |
+| Skill loaded but absent from `<available_skills>` XML | Skill's `tags:` field was set to something other than `agent` / `model:<pinned>` | Either remove `tags:` (loader auto-tags `[agent]`) or set it to `[agent]` |
+| Evolved skill contradicts a built-in of the same name | Evolved takes precedence; a warning is emitted | Check warnings; if unintended, delete the evolved version to restore built-in |
+| Nothing accumulates across runs | `--evolve-batch-size 0` (default) or `--baseline` | Pass `--evolve-batch-size 5` (or similar) on a non-baseline run |
+
+**Cross-agent / cross-bench sharing.** Evolved skills are *not* shared by
+default between different `agent_name` or different benchmarks. To let a
+second agent benefit from the first agent's skills, either:
+- run both with the same `--agent-name`, **or**
+- copy `evolved_skills/<a>_<b>/<agent1>/` into `evolved_skills/<a>_<b>/<agent2>/`
+
 ### Usage examples
 
 ```bash

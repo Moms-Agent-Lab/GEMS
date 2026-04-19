@@ -723,12 +723,28 @@ class ClawAgent:
         max_tool_rounds: int = 40,
         pinned_image_model: str | None = None,
         stage_gated: bool = False,
+        *,
+        image_model_short: str | None = None,
+        benchmark: str | None = None,
+        agent_name: str | None = None,
     ) -> None:
         if api_key:
             _set_llm_api_key(api_key, model)
         self.model = model
         self.server_address = server_address
-        self.skill_manager = SkillManager(skills_dir, evolved_skills_dir=evolved_skills_dir)
+        # When ``evolved_skills_dir`` is not given but both ``image_model_short``
+        # and ``benchmark`` are, the SkillManager derives the right per-bench
+        # sub-folder (e.g. ``evolved_skills/longcat_geneval2/``) so we never
+        # accidentally pull in evolved skills from a different (model, bench)
+        # pair.  The benchmark runner already passes an explicit path and can
+        # ignore these kwargs.
+        self.skill_manager = SkillManager(
+            skills_dir,
+            evolved_skills_dir=evolved_skills_dir,
+            model=image_model_short,
+            benchmark=benchmark,
+            agent_name=agent_name,
+        )
         self.on_change = on_change
         self.on_agent_event: Callable[[str, str, str, dict | None], None] | None = None
         self.max_tool_rounds = max_tool_rounds

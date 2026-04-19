@@ -126,17 +126,19 @@ EXPERIMENTS_ROOT: Path = Path(os.environ.get("EXPERIMENTS_ROOT", _DEFAULT_EXPERI
 
 
 def _build_paths(model_short: str, bench_short: str, agent_name: str = "") -> dict:
+    # Single source of truth for the ``<model>_<bench>[/<agent>]`` convention
+    # lives in ``comfyclaw.skill_manager.evolved_dir_for``.  Keep both this
+    # helper and ``SkillManager(model=..., benchmark=...)`` in sync by
+    # routing through it.
+    from comfyclaw.skill_manager import evolved_dir_for
+
     if agent_name:
         experiment_dir = EXPERIMENTS_ROOT / f"{model_short}_{bench_short}" / agent_name
     else:
         experiment_dir = EXPERIMENTS_ROOT / f"{model_short}_{bench_short}"
     output_dir = os.environ.get("OUTPUT_DIR", str(experiment_dir / "results"))
     detailed_dir = os.environ.get("DETAILED_DIR", str(experiment_dir / "detailed"))
-    evolved_root = REPO_ROOT / "comfyclaw" / "evolved_skills"
-    if agent_name:
-        evolved_dir = str(evolved_root / f"{model_short}_{bench_short}" / agent_name)
-    else:
-        evolved_dir = str(evolved_root / f"{model_short}_{bench_short}")
+    evolved_dir = str(evolved_dir_for(model_short, bench_short, agent_name or None))
     return {
         "output_dir": output_dir,
         "detailed_dir": detailed_dir,

@@ -20,6 +20,7 @@ from .mdp import MDPReward, MDPState
 from .memory import ClawMemory
 from .model_orchestrator import ModelOrchestrator
 from .skill_grounding import SkillGrounding
+from .skill_manager import SkillManager, evolved_dir_for
 from .skill_rag import SkillRAG
 from .skill_store import SkillStore
 from .stage_router import StageRouter
@@ -45,7 +46,9 @@ __all__ = [
     "MDPState",
     "ModelOrchestrator",
     "SkillGrounding",
+    "SkillManager",
     "SkillRAG",
+    "evolved_dir_for",
     "VerifierResult",
     "RegionIssue",
     "SkillEvolver",

@@ -837,14 +837,19 @@ comfyclaw/
 │   │   ├── __init__.py
 │   │   └── js/
 │   │       └── comfy_claw_sync.js
-│   └── skills/                 Built-in skills (19 skills)
-│       ├── workflow-builder/   Architecture recipes
-│       ├── qwen-image-2512/    Qwen model config
-│       ├── self-evolve/        Self-evolution protocol
-│       ├── explore/            Environment exploration
-│       ├── compute/            Resource-aware model selection
-│       ├── photorealistic/     … and 14 more domain skills
-│       └── ...
+│   ├── skills/                 Built-in skills (stable, hand-written)
+│   │   ├── workflow-builder/   Architecture recipes
+│   │   ├── qwen-image-2512/    Qwen model config
+│   │   ├── self-evolve/        Self-evolution protocol
+│   │   ├── explore/            Environment exploration
+│   │   ├── compute/            Resource-aware model selection
+│   │   ├── photorealistic/     … and 14 more domain skills
+│   │   └── ...
+│   └── evolved_skills/         Self-evolved skills, partitioned per run
+│       └── {model}_{benchmark}/[{agent_name}/]<skill>/SKILL.md
+│                               Auto-loaded on re-runs with the same
+│                               --model/--benchmark/--agent-name. See
+│                               experiments/README.md §"Evolved skills"
 ├── experiments/                Benchmark & experiment scripts
 │   ├── README.md
 │   ├── run_benchmark.py        Unified benchmark runner (all models × all benchmarks)

@@ -34,7 +34,7 @@ from typing import Any
 
 import litellm
 
-from .skill_manager import SkillManager, _EVOLVED_SKILLS_DIR
+from .skill_manager import SkillManager, _EVOLVED_SKILLS_ROOT
 from .skill_store import SkillStore
 
 log = logging.getLogger(__name__)
@@ -285,7 +285,7 @@ class SkillEvolver:
         baseline_nodes: int = 10,
         success_threshold: float = 0.9,
     ) -> None:
-        self.evolved_skills_dir = Path(evolved_skills_dir) if evolved_skills_dir else _EVOLVED_SKILLS_DIR
+        self.evolved_skills_dir = Path(evolved_skills_dir) if evolved_skills_dir else _EVOLVED_SKILLS_ROOT
         self.evolved_skills_dir.mkdir(parents=True, exist_ok=True)
         self.store = SkillStore(self.evolved_skills_dir)
         self.skill_manager = SkillManager(skills_dir, evolved_skills_dir=str(self.evolved_skills_dir))
