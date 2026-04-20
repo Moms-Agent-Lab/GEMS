@@ -97,6 +97,9 @@ experiments_output/
 # Skills auto-evolved by benchmark runs (per-agent, per-benchmark subtrees).
 comfyclaw/evolved_skills/
 comfyclaw/skills_evolved_*/
+# Auto-regenerated at runtime by run_benchmark.py --baseline
+# (wiped + repopulated on every run; never hand-edited).
+comfyclaw/_baseline_skills/
 *.db
 
 # ─── Logs ─────────────────────────────────────────────────────────────────────
